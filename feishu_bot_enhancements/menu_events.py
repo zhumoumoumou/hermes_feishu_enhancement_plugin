@@ -35,15 +35,15 @@ def parse_menu_command(event_key: str) -> str | None:
     return None
 
 
-def resolve_dm_chat_id(open_id: str, sessions_path: Path | None = None) -> str | None:
-    """Resolve the latest root-DM chat ID persisted for a Feishu operator."""
-    path = sessions_path or (get_hermes_home() / "sessions" / "sessions.json")
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return None
+def _latest_root_dm(entries, open_id: str) -> str | None:
     matches: list[tuple[str, str]] = []
-    for value in payload.values() if isinstance(payload, dict) else ():
+    values = entries.values() if isinstance(entries, dict) else ()
+    for value in values:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                continue
         if not isinstance(value, dict):
             continue
         origin = value.get("origin")
@@ -58,6 +58,37 @@ def resolve_dm_chat_id(open_id: str, sessions_path: Path | None = None) -> str |
         ):
             matches.append((str(value.get("updated_at") or ""), str(origin["chat_id"])))
     return max(matches)[1] if matches else None
+
+
+def resolve_dm_chat_id(
+    open_id: str,
+    sessions_path: Path | None = None,
+    *,
+    state_db_path: Path | None = None,
+) -> str | None:
+    """Resolve the latest root DM from state.db, then the legacy JSON mirror."""
+    path = sessions_path or (get_hermes_home() / "sessions" / "sessions.json")
+    db_path = state_db_path or (get_hermes_home() / "state.db")
+
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=db_path, read_only=True)
+        try:
+            entries = db.load_gateway_routing_entries(scope=str(path.parent.resolve()))
+        finally:
+            db.close()
+        chat_id = _latest_root_dm(entries, open_id)
+        if chat_id:
+            return chat_id
+    except Exception:
+        logger.debug("Unable to read canonical gateway routing from state.db", exc_info=True)
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return _latest_root_dm(payload, open_id)
 
 
 class MenuEventEnhancementMixin:

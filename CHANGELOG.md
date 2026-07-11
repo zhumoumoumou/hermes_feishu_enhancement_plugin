@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.1
+
+- Resolve menu-operator DM routing from the canonical `state.db` gateway index.
+- Keep `sessions.json` only as a compatibility fallback.
+- Add regression coverage for installations with no legacy JSON mirror.
+
 ## 2.0.0
 
 - Rename the plugin from `feishu-menu-events` to `feishu-bot-enhancements`.

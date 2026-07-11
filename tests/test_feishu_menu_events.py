@@ -182,6 +182,69 @@ def test_resolve_dm_chat_id_uses_latest_matching_root_dm(tmp_path):
     assert plugin.resolve_dm_chat_id("ou_unknown", path) is None
 
 
+def test_resolve_dm_chat_id_prefers_canonical_state_db_without_legacy_json(tmp_path):
+    import json
+
+    from hermes_state import SessionDB
+
+    plugin = _load_plugin_module()
+    sessions_dir = tmp_path / "sessions"
+    state_db_path = tmp_path / "state.db"
+    entries = {
+        "older": json.dumps(
+            {
+                "updated_at": "2026-07-09T10:00:00",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_state_old",
+                    "chat_type": "dm",
+                    "user_id": "ou_target",
+                    "thread_id": None,
+                },
+            }
+        ),
+        "thread": json.dumps(
+            {
+                "updated_at": "2026-07-11T10:00:00",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_state_thread",
+                    "chat_type": "dm",
+                    "user_id": "ou_target",
+                    "thread_id": "om_thread",
+                },
+            }
+        ),
+        "latest": json.dumps(
+            {
+                "updated_at": "2026-07-10T10:00:00",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_state_latest",
+                    "chat_type": "dm",
+                    "user_id": "ou_target",
+                    "thread_id": None,
+                },
+            }
+        ),
+    }
+    db = SessionDB(db_path=state_db_path)
+    try:
+        db.replace_gateway_routing_entries(entries, scope=str(sessions_dir))
+    finally:
+        db.close()
+
+    assert not (sessions_dir / "sessions.json").exists()
+    assert (
+        plugin.resolve_dm_chat_id(
+            "ou_target",
+            sessions_dir / "sessions.json",
+            state_db_path=state_db_path,
+        )
+        == "oc_state_latest"
+    )
+
+
 def test_menu_event_routes_as_existing_gateway_command(monkeypatch):
     import asyncio
     from types import SimpleNamespace

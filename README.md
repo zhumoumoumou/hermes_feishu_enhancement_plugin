@@ -13,7 +13,7 @@ Listens for `application.bot.menu_v6` and safely translates namespaced menu keys
 - `hermes.reasoning.status` → `/reasoning`
 - `hermes.reasoning.<effort>` → `/reasoning <effort>`
 
-Unsupported or unsafe event keys are rejected. Menu actions are routed only to a previously established root DM for the app-scoped operator ID.
+Unsupported or unsafe event keys are rejected. Menu actions are routed only to a previously established root DM for the app-scoped operator ID. Routing is read from Hermes' canonical `state.db` gateway index, with `sessions.json` retained only as a legacy fallback.
 
 ## Layout
 
