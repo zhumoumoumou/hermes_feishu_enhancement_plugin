@@ -279,4 +279,4 @@ def test_menu_event_routes_as_existing_gateway_command(monkeypatch):
     assert routed.source.chat_id == "oc_target_dm"
     assert routed.source.user_id == "ou_target"
     assert routed.source.chat_type == "dm"
-    assert routed.message_id.startswith("menu:123456:")
+    assert routed.message_id is None

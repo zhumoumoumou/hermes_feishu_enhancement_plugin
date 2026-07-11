@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.2
+
+- Prevent menu-generated commands from being treated as replies to a fake Feishu message ID.
+- Send command results as normal messages to the resolved DM chat.
+
 ## 2.0.1
 
 - Resolve menu-operator DM routing from the canonical `state.db` gateway index.

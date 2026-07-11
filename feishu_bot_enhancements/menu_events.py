@@ -163,7 +163,7 @@ class MenuEventEnhancementMixin:
             message_type=_bundled.MessageType.COMMAND,
             source=source,
             raw_message=data,
-            message_id=f"menu:{getattr(event, 'timestamp', '')}:{_bundled.uuid.uuid4()}",
+            message_id=None,
             channel_prompt=self._resolve_channel_prompt(chat_id),
             timestamp=_bundled.datetime.now(),
         )
