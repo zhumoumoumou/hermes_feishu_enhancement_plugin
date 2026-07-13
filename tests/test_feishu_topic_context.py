@@ -73,6 +73,7 @@ def _event(*, root_id="om_root", create_time=2_000_000):
 
 def _adapter(history):
     adapter = object.__new__(TopicContextEnhancementMixin)
+    adapter.config = SimpleNamespace(extra={})
     adapter._session_store = _Store(history)
     adapter._client = None
     parent_key = adapter._session_store._generate_session_key(_source(thread_id=None))
@@ -130,6 +131,27 @@ def test_new_topic_inherits_parent_snapshot_strictly_before_persisted_root():
     assert "群聊后续新增" not in event.channel_context
 
 
+def test_parent_context_inheritance_can_be_disabled():
+    adapter = _adapter([
+        {"role": "user", "content": "must stay out", "timestamp": 100},
+    ])
+    adapter.config.extra["inherit_parent_chat_context"] = False
+    event = _event(root_id="", create_time=200)
+
+    asyncio.run(adapter._seed_topic_context(event))
+
+    assert event.channel_context is None
+    assert not hasattr(adapter, "_topic_context_seeded")
+
+
+def test_parent_context_inheritance_defaults_on_and_accepts_string_false():
+    adapter = _adapter([])
+    assert adapter._parent_context_inheritance_enabled() is True
+
+    adapter.config.extra["inherit_parent_chat_context"] = "off"
+    assert adapter._parent_context_inheritance_enabled() is False
+
+
 def test_dm_topic_uses_the_same_frozen_parent_chat_snapshot():
     history = [
         {"role": "user", "content": "单聊旧问题", "timestamp": 100},
@@ -137,6 +159,7 @@ def test_dm_topic_uses_the_same_frozen_parent_chat_snapshot():
         {"role": "user", "content": "单聊后续新增", "timestamp": 210},
     ]
     adapter = object.__new__(TopicContextEnhancementMixin)
+    adapter.config = SimpleNamespace(extra={})
     adapter._session_store = _Store(history)
     adapter._client = None
     source = _source(chat_type="dm")

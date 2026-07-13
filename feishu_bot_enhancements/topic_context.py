@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping, Sequence
 logger = logging.getLogger("hermes.plugins.feishu_bot_enhancements.topic_context")
 
 _ROOT_TIME_CACHE_SIZE = 256
+_INHERIT_PARENT_CONTEXT_KEY = "inherit_parent_chat_context"
 _CONTEXT_TAG = "<feishu_parent_chat_context>"
 _LEGACY_CONTEXT_TAG = "<feishu_parent_group_context>"
 _CONTEXT_HEADER = (
@@ -111,6 +112,21 @@ def _platform_value(source: Any) -> str:
 class TopicContextEnhancementMixin:
     """Add an immutable parent-chat history snapshot to each Feishu topic."""
 
+    def _parent_context_inheritance_enabled(self) -> bool:
+        extra = getattr(getattr(self, "config", None), "extra", None) or {}
+        value = extra.get(_INHERIT_PARENT_CONTEXT_KEY, True)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"false", "0", "no", "off", "disabled"}:
+                return False
+            if normalized in {"true", "1", "yes", "on", "enabled"}:
+                return True
+        # Preserve the enabled-by-default behavior for missing or malformed
+        # values; disabling inheritance must be explicit and unambiguous.
+        return True
+
     async def handle_message(self, event) -> None:
         # Feishu's bundled adapter calls handle_message while holding its
         # per-chat lock. Seed here so two first messages cannot both inherit,
@@ -120,6 +136,8 @@ class TopicContextEnhancementMixin:
         await super().handle_message(event)
 
     async def _seed_topic_context(self, event: Any) -> None:
+        if not self._parent_context_inheritance_enabled():
+            return
         source = getattr(event, "source", None)
         if (
             source is None

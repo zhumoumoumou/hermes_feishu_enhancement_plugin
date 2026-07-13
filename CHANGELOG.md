@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.1.1
+
+- Add the enabled-by-default `inherit_parent_chat_context` Feishu setting to
+  disable frozen parent-chat snapshots for both group and direct-message topics.
+
 ## 4.1.0
 
 - Seed each new Feishu topic once with the parent Hermes group conversation

@@ -13,7 +13,7 @@ revision is automatically compatible.
 | Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
 | Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
 | Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
-| This enhancement plugin | `feishu-bot-enhancements 4.1.0` | `plugin.yaml` |
+| This enhancement plugin | `feishu-bot-enhancements 4.1.1` | `plugin.yaml` |
 
 The plugin composes the bundled Feishu adapter and imports its public runtime
 entry points instead of patching Hermes source. When upgrading Hermes or the
@@ -36,6 +36,20 @@ was never allowed to receive or persist. It follows the configured group and
 thread session-isolation settings; for one shared context per group and per
 topic, set `group_sessions_per_user: false` and
 `thread_sessions_per_user: false`.
+
+Parent-context inheritance is enabled by default. Disable it for both group and
+direct-message topics with:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      inherit_parent_chat_context: false
+```
+
+The setting is read when the Feishu adapter starts, so restart the gateway after
+changing it. Disabling it prevents future snapshot injection; it does not remove
+snapshots already persisted in existing topic transcripts.
 
 ### Custom menu events
 
