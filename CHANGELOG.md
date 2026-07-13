@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.0
+
+- Document and pin the isolated test environment, including the Feishu SDK.
+- Cover canonical-database precedence and invalid-database JSON fallback.
+- Enable the built-in Feishu document reader in normal bot DMs and group chats.
+
 ## 2.0.2
 
 - Prevent menu-generated commands from being treated as replies to a fake Feishu message ID.

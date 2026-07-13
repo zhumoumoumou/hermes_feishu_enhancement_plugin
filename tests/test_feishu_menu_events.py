@@ -102,7 +102,14 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
     class FakeContext:
         manifest = FakeManifest()
 
-    plugin.register(FakeContext())
+        def __init__(self):
+            self.hooks = []
+
+        def register_hook(self, name, callback):
+            self.hooks.append((name, callback))
+
+    context = FakeContext()
+    plugin.register(context)
 
     assert len(registered) == 1
     replacement = registered[0]
@@ -113,6 +120,10 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
     assert replacement.source == "plugin"
     assert replacement.plugin_name == "feishu-bot-enhancements"
     assert replacement.adapter_factory is plugin._build_adapter
+    assert context.hooks == [
+        ("pre_tool_call", plugin._document_access.inject_document_client),
+        ("post_tool_call", plugin._document_access.clear_document_client),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -242,6 +253,98 @@ def test_resolve_dm_chat_id_prefers_canonical_state_db_without_legacy_json(tmp_p
             state_db_path=state_db_path,
         )
         == "oc_state_latest"
+    )
+
+
+def test_resolve_dm_chat_id_prefers_canonical_state_db_over_legacy_json(tmp_path):
+    import json
+
+    from hermes_state import SessionDB
+
+    plugin = _load_plugin_module()
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sessions_path = sessions_dir / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "legacy": {
+                    "updated_at": "2026-07-13T12:00:00",
+                    "origin": {
+                        "platform": "feishu",
+                        "chat_id": "oc_legacy_newer",
+                        "chat_type": "dm",
+                        "user_id": "ou_target",
+                        "thread_id": None,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    entries = {
+        "canonical": json.dumps(
+            {
+                "updated_at": "2026-07-10T10:00:00",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_canonical",
+                    "chat_type": "dm",
+                    "user_id": "ou_target",
+                    "thread_id": None,
+                },
+            }
+        )
+    }
+    db = SessionDB(db_path=state_db_path)
+    try:
+        db.replace_gateway_routing_entries(entries, scope=str(sessions_dir.resolve()))
+    finally:
+        db.close()
+
+    assert (
+        plugin.resolve_dm_chat_id(
+            "ou_target", sessions_path, state_db_path=state_db_path
+        )
+        == "oc_canonical"
+    )
+
+
+def test_resolve_dm_chat_id_falls_back_to_legacy_json_when_state_db_is_invalid(
+    tmp_path,
+):
+    import json
+
+    plugin = _load_plugin_module()
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sessions_path = sessions_dir / "sessions.json"
+    state_db_path = tmp_path / "state.db"
+    state_db_path.write_bytes(b"not a sqlite database")
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "legacy": {
+                    "updated_at": "2026-07-10T10:00:00",
+                    "origin": {
+                        "platform": "feishu",
+                        "chat_id": "oc_legacy_fallback",
+                        "chat_type": "dm",
+                        "user_id": "ou_target",
+                        "thread_id": None,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        plugin.resolve_dm_chat_id(
+            "ou_target", sessions_path, state_db_path=state_db_path
+        )
+        == "oc_legacy_fallback"
     )
 
 

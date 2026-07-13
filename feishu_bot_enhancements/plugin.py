@@ -7,6 +7,7 @@ from dataclasses import replace
 from gateway.platform_registry import platform_registry
 from plugins.platforms.feishu import adapter as _bundled
 
+from . import document_access as _document_access
 from . import menu_events as _menu_events
 from .menu_events import MenuEventEnhancementMixin, parse_menu_command, resolve_dm_chat_id
 
@@ -23,7 +24,9 @@ MenuEnabledFeishuAdapter = EnhancedFeishuAdapter
 
 
 def _build_adapter(config):
-    return EnhancedFeishuAdapter(config)
+    adapter = EnhancedFeishuAdapter(config)
+    _document_access.bind_adapter(adapter)
+    return adapter
 
 
 def register(ctx) -> None:
@@ -39,6 +42,8 @@ def register(ctx) -> None:
             plugin_name=ctx.manifest.name,
         )
     )
+    ctx.register_hook("pre_tool_call", _document_access.inject_document_client)
+    ctx.register_hook("post_tool_call", _document_access.clear_document_client)
 
 
 __all__ = [
@@ -47,6 +52,7 @@ __all__ = [
     "MenuEnabledFeishuAdapter",
     "_build_adapter",
     "_bundled",
+    "_document_access",
     "_menu_events",
     "parse_menu_command",
     "platform_registry",
