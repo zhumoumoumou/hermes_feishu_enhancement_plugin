@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.1.0
+
+- Seed each new Feishu topic once with the parent Hermes group conversation
+  from strictly before the topic root message.
+- Freeze the inherited snapshot so later parent-chat messages never leak into
+  an existing topic, with exact root-time lookup through Feishu when needed.
+- Apply the same frozen parent-chat snapshot semantics to direct-message topics.
+
 ## 4.0.0
 
 - Add structured Block inspection with bounded automatic pagination.

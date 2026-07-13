@@ -35,11 +35,13 @@ from .document_domains import (
     register_document_domain_tools,
 )
 from .menu_events import MenuEventEnhancementMixin, parse_menu_command, resolve_dm_chat_id
+from .topic_context import TopicContextEnhancementMixin
 from .plugin import EnhancedFeishuAdapter, register
 
 __all__ = [
     "EnhancedFeishuAdapter",
     "MenuEventEnhancementMixin",
+    "TopicContextEnhancementMixin",
     "bind_adapter",
     "clear_document_client",
     "get_bound_client",

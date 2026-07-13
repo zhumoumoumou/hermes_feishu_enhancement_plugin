@@ -13,13 +13,29 @@ revision is automatically compatible.
 | Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
 | Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
 | Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
-| This enhancement plugin | `feishu-bot-enhancements 4.0.0` | `plugin.yaml` |
+| This enhancement plugin | `feishu-bot-enhancements 4.1.0` | `plugin.yaml` |
 
 The plugin composes the bundled Feishu adapter and imports its public runtime
 entry points instead of patching Hermes source. When upgrading Hermes or the
 bundled `feishu-platform`, run this repository's full test suite before rollout.
 
 ## Current enhancements
+
+### Frozen parent-chat context for topics
+
+When a new Feishu topic first reaches Hermes, the plugin seeds that topic with
+the active Hermes conversation from its parent chat that predates the topic's
+root message. The root timestamp is resolved from the persisted parent message
+when possible and otherwise from Feishu's message API. The snapshot is added
+only once: later parent-chat messages never flow into the topic, while later
+messages inside the topic continue using the topic's own session.
+
+The same mechanism applies to group-chat and direct-message topics. It inherits
+Hermes' persisted parent-chat conversation, not arbitrary messages that the bot
+was never allowed to receive or persist. It follows the configured group and
+thread session-isolation settings; for one shared context per group and per
+topic, set `group_sessions_per_user: false` and
+`thread_sessions_per_user: false`.
 
 ### Custom menu events
 

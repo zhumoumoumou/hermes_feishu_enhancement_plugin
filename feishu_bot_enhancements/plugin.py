@@ -14,12 +14,17 @@ from . import document_objects as _document_objects
 from . import document_tools as _document_tools
 from . import menu_events as _menu_events
 from .menu_events import MenuEventEnhancementMixin, parse_menu_command, resolve_dm_chat_id
+from .topic_context import TopicContextEnhancementMixin
 
 
 BundledFeishuAdapter = _bundled.FeishuAdapter
 
 
-class EnhancedFeishuAdapter(MenuEventEnhancementMixin, BundledFeishuAdapter):
+class EnhancedFeishuAdapter(
+    TopicContextEnhancementMixin,
+    MenuEventEnhancementMixin,
+    BundledFeishuAdapter,
+):
     """Bundled Feishu adapter plus all locally managed enhancements."""
 
 
@@ -29,6 +34,12 @@ MenuEnabledFeishuAdapter = EnhancedFeishuAdapter
 
 def _build_adapter(config):
     adapter = EnhancedFeishuAdapter(config)
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        adapter._enhancement_profile_name = get_active_profile_name() or "default"
+    except Exception:
+        adapter._enhancement_profile_name = "default"
     _document_access.bind_adapter(adapter)
     return adapter
 
@@ -66,6 +77,7 @@ __all__ = [
     "_document_objects",
     "_document_tools",
     "_menu_events",
+    "TopicContextEnhancementMixin",
     "parse_menu_command",
     "platform_registry",
     "register",
