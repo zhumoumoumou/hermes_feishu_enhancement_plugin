@@ -9,6 +9,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import sys
 
+from lark_oapi.core.enum import HttpMethod
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -672,6 +674,257 @@ def test_document_insert_media_creates_uploads_and_binds_image_and_file(monkeypa
         assert client.requests[1].body == {operation: {"token": "file_token"}}
 
 
+def test_document_update_blocks_batches_rich_text_and_structural_edits():
+    plugin = _load_plugin_module()
+
+    class FakeClient:
+        def __init__(self):
+            self.request_value = None
+
+        def request(self, request):
+            self.request_value = request
+            return SimpleNamespace(
+                code=0,
+                msg="success",
+                raw=SimpleNamespace(
+                    content=json.dumps({"data": {"document_revision_id": 8}})
+                ),
+            )
+
+    client = FakeClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+    result = json.loads(
+        asyncio.run(
+            plugin._document_objects.handle_doc_update_blocks(
+                {
+                    "document_id": "doxcn_created",
+                    "updates": [
+                        {
+                            "block_id": "text_block",
+                            "operation": "update_text",
+                            "data": {
+                                "elements": [
+                                    {"content": "Area: ", "bold": True},
+                                    {"type": "equation", "content": r"A=\pi r^2"},
+                                ],
+                                "style": {"align": 2, "folded": False},
+                            },
+                        },
+                        {
+                            "block_id": "table_block",
+                            "operation": "merge_table_cells",
+                            "data": {
+                                "row_start_index": 0,
+                                "row_end_index": 1,
+                                "column_start_index": 0,
+                                "column_end_index": 2,
+                            },
+                        },
+                    ],
+                }
+            )
+        )
+    )
+
+    assert result["success"] is True
+    assert result["updated_block_count"] == 2
+    assert client.request_value.uri.endswith("/blocks/batch_update")
+    requests = client.request_value.body["requests"]
+    assert requests[0]["update_text"]["style"] == {"align": 2, "folded": False}
+    assert requests[0]["update_text"]["fields"] == [1, 3]
+    assert requests[0]["update_text"]["elements"][1] == {
+        "equation": {"content": r"A=\pi r^2", "text_element_style": {}}
+    }
+    assert requests[1]["merge_table_cells"] == {
+        "row_start_index": 0,
+        "row_end_index": 1,
+        "column_start_index": 0,
+        "column_end_index": 2,
+    }
+
+
+def test_document_update_builder_covers_every_declared_operation():
+    plugin = _load_plugin_module()
+    cases = {
+        "update_text_elements": {"content": "new"},
+        "update_text_style": {"style": {"align": 1}},
+        "update_text": {"content": "done", "style": {"done": True}},
+        "update_table_property": {"header_row": True},
+        "insert_table_row": {"row_index": -1},
+        "insert_table_column": {"column_index": -1},
+        "delete_table_rows": {"row_start_index": 0, "row_end_index": 1},
+        "delete_table_columns": {
+            "column_start_index": 0,
+            "column_end_index": 1,
+        },
+        "merge_table_cells": {
+            "row_start_index": 0,
+            "row_end_index": 1,
+            "column_start_index": 0,
+            "column_end_index": 1,
+        },
+        "unmerge_table_cells": {"row_index": 0, "column_index": 0},
+        "insert_grid_column": {"column_index": 1},
+        "delete_grid_column": {"column_index": 0},
+        "update_grid_column_width_ratio": {"width_ratios": [40, 60]},
+        "replace_image": {"token": "image_token", "caption": "Updated"},
+        "replace_file": {"token": "file_token"},
+        "update_task": {"folded": True},
+    }
+
+    assert set(cases) == set(plugin._document_objects._UPDATE_OPERATIONS)
+    for index, (operation, data) in enumerate(cases.items()):
+        request, error = plugin._document_objects._build_update_request(
+            {"block_id": f"block_{index}", "operation": operation, "data": data},
+            index,
+        )
+        assert error is None
+        assert request["block_id"] == f"block_{index}"
+        assert operation in request
+    assert cases["replace_image"]["caption"] == "Updated"
+
+
+def test_document_update_blocks_uploads_and_replaces_existing_media(monkeypatch):
+    plugin = _load_plugin_module()
+
+    async def fake_resolve(kind, source, *, task_id, cwd):
+        assert kind == "image"
+        assert source == "https://example.com/new.png"
+        return b"new-image", "image/png", "new.png"
+
+    monkeypatch.setattr(plugin._document_objects, "_resolve_media_source", fake_resolve)
+
+    class FakeMedia:
+        def upload_all(self, request):
+            return SimpleNamespace(
+                code=0,
+                msg="success",
+                data=SimpleNamespace(file_token="new_image_token"),
+            )
+
+    class FakeClient:
+        def __init__(self):
+            self.request_value = None
+            self.drive = SimpleNamespace(v1=SimpleNamespace(media=FakeMedia()))
+
+        def request(self, request):
+            self.request_value = request
+            return SimpleNamespace(
+                code=0,
+                msg="success",
+                raw=SimpleNamespace(
+                    content=json.dumps({"data": {"document_revision_id": 9}})
+                ),
+            )
+
+    client = FakeClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+    result = json.loads(
+        asyncio.run(
+            plugin._document_objects.handle_doc_update_blocks(
+                {
+                    "document_id": "doxcn_created",
+                    "updates": [
+                        {
+                            "block_id": "image_block",
+                            "operation": "replace_image",
+                            "source": "https://example.com/new.png",
+                            "data": {"align": 3, "caption": "New image"},
+                        }
+                    ],
+                },
+                task_id="task-1",
+                cwd="/workspace",
+            )
+        )
+    )
+
+    assert result["success"] is True
+    assert result["uploaded_media"][0]["file_token"] == "new_image_token"
+    request = client.request_value.body["requests"][0]
+    assert request == {
+        "block_id": "image_block",
+        "replace_image": {
+            "align": 3,
+            "caption": {"content": "New image"},
+            "token": "new_image_token",
+        },
+    }
+
+
+def test_document_delete_blocks_uses_parent_and_exclusive_index_range():
+    plugin = _load_plugin_module()
+
+    class FakeClient:
+        def __init__(self):
+            self.request_value = None
+
+        def request(self, request):
+            self.request_value = request
+            return SimpleNamespace(
+                code=0,
+                msg="success",
+                raw=SimpleNamespace(
+                    content=json.dumps({"data": {"document_revision_id": 10}})
+                ),
+            )
+
+    client = FakeClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+    result = json.loads(
+        plugin._document_objects.handle_doc_delete_blocks(
+            {
+                "document_id": "doxcn_created",
+                "parent_block_id": "container_block",
+                "start_index": 2,
+                "end_index": 5,
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["deleted_count"] == 3
+    assert client.request_value.uri.endswith("/children/batch_delete")
+    assert client.request_value.paths == {
+        "document_id": "doxcn_created",
+        "block_id": "container_block",
+    }
+    assert client.request_value.body == {"start_index": 2, "end_index": 5}
+
+
+def test_document_update_and_delete_reject_ambiguous_or_invalid_ranges():
+    plugin = _load_plugin_module()
+    duplicate = json.loads(
+        asyncio.run(
+            plugin._document_objects.handle_doc_update_blocks(
+                {
+                    "document_id": "doxcn_created",
+                    "updates": [
+                        {
+                            "block_id": "same",
+                            "operation": "insert_table_row",
+                            "data": {"row_index": -1},
+                        },
+                        {
+                            "block_id": "same",
+                            "operation": "insert_table_column",
+                            "data": {"column_index": -1},
+                        },
+                    ],
+                }
+            )
+        )
+    )
+    invalid_delete = json.loads(
+        plugin._document_objects.handle_doc_delete_blocks(
+            {"document_id": "doxcn_created", "start_index": 2, "end_index": 2}
+        )
+    )
+
+    assert "only one update per block" in duplicate["error"]
+    assert "less than" in invalid_delete["error"]
+
+
 def test_document_rich_text_validation_rejects_invalid_input():
     plugin = _load_plugin_module()
 
@@ -777,3 +1030,365 @@ def test_resolve_session_open_id_uses_canonical_gateway_index(tmp_path):
         )
         == "ou_current"
     )
+
+
+class _RecordingClient:
+    def __init__(self, responses=None):
+        self.requests = []
+        self.responses = list(responses or [])
+
+    def request(self, request):
+        self.requests.append(request)
+        data = self.responses.pop(0) if self.responses else {"ok": True}
+        return SimpleNamespace(
+            code=0,
+            msg="success",
+            raw=SimpleNamespace(content=json.dumps({"data": data})),
+        )
+
+
+def test_rich_text_update_preserves_comments_and_inline_files():
+    plugin = _load_plugin_module()
+    client = _RecordingClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = asyncio.run(
+        plugin._document_objects.handle_doc_update_blocks(
+            {
+                "document_id": "doxcn_doc",
+                "updates": [
+                    {
+                        "block_id": "doxcn_text",
+                        "operation": "update_text_elements",
+                        "data": {
+                            "elements": [
+                                {
+                                    "content": "reviewed",
+                                    "bold": True,
+                                    "comment_ids": ["comment_1"],
+                                },
+                                {
+                                    "type": "inline_file",
+                                    "file_token": "boxcn_file",
+                                    "source_block_id": "doxcn_source",
+                                },
+                            ]
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    assert json.loads(result)["success"] is True
+    elements = client.requests[0].body["requests"][0]["update_text_elements"][
+        "elements"
+    ]
+    assert elements[0]["text_run"]["text_element_style"] == {
+        "bold": True,
+        "comment_ids": ["comment_1"],
+    }
+    assert elements[1] == {
+        "file": {
+            "file_token": "boxcn_file",
+            "source_block_id": "doxcn_source",
+            "text_element_style": {},
+        }
+    }
+
+    rejected = json.loads(
+        plugin._document_tools.handle_doc_append_text(
+            {
+                "document_id": "doxcn_doc",
+                "elements": [{"type": "inline_file", "file_token": "boxcn_file"}],
+            }
+        )
+    )
+    assert "only preserve or move" in rejected["error"]
+
+
+def test_media_property_update_reuses_the_existing_token():
+    plugin = _load_plugin_module()
+    client = _RecordingClient(
+        [{"block": {"image": {"token": "img_existing"}}}, {"revision_id": 3}]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = asyncio.run(
+        plugin._document_objects.handle_doc_update_blocks(
+            {
+                "document_id": "doxcn_doc",
+                "updates": [
+                    {
+                        "block_id": "doxcn_image",
+                        "operation": "replace_image",
+                        "data": {"width": 640, "align": 2},
+                    }
+                ],
+            }
+        )
+    )
+
+    assert json.loads(result)["success"] is True
+    assert client.requests[0].http_method == HttpMethod.GET
+    assert client.requests[0].uri.endswith("/blocks/:block_id")
+    assert client.requests[1].body["requests"] == [
+        {
+            "block_id": "doxcn_image",
+            "replace_image": {"token": "img_existing", "width": 640, "align": 2},
+        }
+    ]
+
+
+def test_structured_block_inspection_follows_pagination():
+    plugin = _load_plugin_module()
+    client = _RecordingClient(
+        [
+            {"items": [{"block_id": "a"}], "has_more": True, "page_token": "p2"},
+            {"items": [{"block_id": "b"}], "has_more": False},
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_management.handle_doc_get_blocks(
+            {"document_id": "doxcn_doc", "fetch_all": True, "page_size": 100}
+        )
+    )
+
+    assert result["items"] == [{"block_id": "a"}, {"block_id": "b"}]
+    assert result["page_count"] == 2
+    assert ("page_token", "p2") in client.requests[1].queries
+
+
+def test_document_comments_and_lifecycle_request_shapes():
+    plugin = _load_plugin_module()
+    client = _RecordingClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    comment_calls = [
+        {"document_id": "doc", "action": "list"},
+        {"document_id": "doc", "action": "create", "content": "first"},
+        {
+            "document_id": "doc",
+            "action": "reply",
+            "comment_id": "c1",
+            "elements": [{"type": "person", "user_id": "ou_1"}],
+        },
+        {
+            "document_id": "doc",
+            "action": "update_reply",
+            "comment_id": "c1",
+            "reply_id": "r1",
+            "content": "fixed",
+        },
+        {
+            "document_id": "doc",
+            "action": "delete_reply",
+            "comment_id": "c1",
+            "reply_id": "r1",
+        },
+        {
+            "document_id": "doc",
+            "action": "set_solved",
+            "comment_id": "c1",
+            "is_solved": True,
+        },
+    ]
+    for args in comment_calls:
+        assert json.loads(plugin._document_management.handle_doc_comments(args))[
+            "success"
+        ]
+
+    assert [request.http_method for request in client.requests[:6]] == [
+        HttpMethod.GET,
+        HttpMethod.POST,
+        HttpMethod.POST,
+        HttpMethod.PUT,
+        HttpMethod.DELETE,
+        HttpMethod.PATCH,
+    ]
+    assert client.requests[1].body == {
+        "reply_list": {
+            "replies": [
+                {
+                    "content": {
+                        "elements": [
+                            {"type": "text_run", "text_run": {"text": "first"}}
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+    assert client.requests[2].body == {
+        "content": {
+            "elements": [{"type": "person", "person": {"user_id": "ou_1"}}]
+        }
+    }
+
+    lifecycle_calls = [
+        {"document_id": "doc", "action": "rename", "title": "Renamed"},
+        {
+            "document_id": "doc",
+            "action": "copy",
+            "title": "Copied",
+            "folder_token": "fld_copy",
+        },
+        {"document_id": "doc", "action": "move", "folder_token": "fld_move"},
+        {"document_id": "doc", "action": "delete"},
+    ]
+    for args in lifecycle_calls:
+        assert json.loads(plugin._document_management.handle_doc_manage(args))["success"]
+
+    rename, copy, move, delete = client.requests[6:]
+    assert rename.http_method == HttpMethod.PATCH
+    assert rename.paths == {"document_id": "doc", "block_id": "doc"}
+    assert copy.uri.endswith("/:file_token/copy")
+    assert copy.body == {"name": "Copied", "type": "docx", "folder_token": "fld_copy"}
+    assert move.body == {"type": "docx", "folder_token": "fld_move"}
+    assert delete.http_method == HttpMethod.DELETE
+    assert ("type", "docx") in delete.queries
+
+
+def test_sheet_edit_operation_matrix():
+    plugin = _load_plugin_module()
+    client = _RecordingClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+    operations = [
+        ("write_values", {"range": "Sheet1!A1:B2", "values": [[1, 2], [3, 4]]}),
+        ("append_values", {"range": "Sheet1!A:B", "values": [[5, 6]]}),
+        ("set_style", {"range": "Sheet1!A1", "style": {"font": {"bold": True}}}),
+        ("add_dimensions", {"sheet_id": "s1", "major_dimension": "ROWS", "length": 2}),
+        (
+            "insert_dimensions",
+            {"sheet_id": "s1", "major_dimension": "ROWS", "start_index": 1, "end_index": 3},
+        ),
+        (
+            "delete_dimensions",
+            {"sheet_id": "s1", "major_dimension": "COLUMNS", "start_index": 2, "end_index": 4},
+        ),
+        (
+            "move_dimensions",
+            {
+                "sheet_id": "s1",
+                "major_dimension": "ROWS",
+                "start_index": 0,
+                "end_index": 2,
+                "destination_index": 4,
+            },
+        ),
+        ("batch_sheets", {"requests": [{"addSheet": {"properties": {"title": "New"}}}]}),
+    ]
+    for operation, data in operations:
+        result = json.loads(
+            plugin._document_domains.handle_sheet_edit(
+                {"spreadsheet_token": "sht", "operation": operation, "data": data}
+            )
+        )
+        assert result["success"] is True
+
+    assert [request.http_method for request in client.requests] == [
+        HttpMethod.PUT,
+        HttpMethod.POST,
+        HttpMethod.PUT,
+        HttpMethod.POST,
+        HttpMethod.POST,
+        HttpMethod.DELETE,
+        HttpMethod.POST,
+        HttpMethod.POST,
+    ]
+    assert client.requests[0].body["valueRange"]["range"] == "Sheet1!A1:B2"
+    assert client.requests[6].uri.endswith("/:sheet_id/move_dimension")
+    assert client.requests[6].body == {
+        "source": {"major_dimension": "ROWS", "start_index": 0, "end_index": 2},
+        "destination_index": 4,
+    }
+
+
+def test_bitable_board_and_task_operation_matrices():
+    plugin = _load_plugin_module()
+    client = _RecordingClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    bitable_calls = [
+        ("update_app", {}, {}),
+        ("batch_create_tables", {}, {"tables": [{"name": "T"}]}),
+        ("batch_delete_tables", {}, {"table_ids": ["tbl"]}),
+        ("create_field", {"table_id": "tbl"}, {"field_name": "F", "type": 1}),
+        ("update_field", {"table_id": "tbl", "field_id": "fld"}, {"field_name": "F2"}),
+        ("delete_field", {"table_id": "tbl", "field_id": "fld"}, {}),
+        ("create_view", {"table_id": "tbl"}, {"view_name": "V", "view_type": "grid"}),
+        ("update_view", {"table_id": "tbl", "view_id": "vew"}, {"view_name": "V2"}),
+        ("delete_view", {"table_id": "tbl", "view_id": "vew"}, {}),
+        ("batch_create_records", {"table_id": "tbl"}, {"records": [{"fields": {"F": "a"}}]}),
+        ("batch_update_records", {"table_id": "tbl"}, {"records": [{"record_id": "rec", "fields": {"F": "b"}}]}),
+        ("batch_delete_records", {"table_id": "tbl"}, {"records": ["rec"]}),
+    ]
+    for operation, ids, data in bitable_calls:
+        result = json.loads(
+            plugin._document_domains.handle_bitable_edit(
+                {"app_token": "app", "operation": operation, "data": data, **ids}
+            )
+        )
+        assert result["success"] is True
+
+    assert [request.uri.rsplit("/", 1)[-1] for request in client.requests[9:12]] == [
+        "batch_create",
+        "batch_update",
+        "batch_delete",
+    ]
+    assert client.requests[4].http_method == HttpMethod.PUT
+    assert client.requests[7].http_method == HttpMethod.PATCH
+    assert client.requests[8].http_method == HttpMethod.DELETE
+
+    board_start = len(client.requests)
+    for operation, data in [
+        ("get_nodes", {}),
+        ("get_theme", {}),
+        ("create_nodes", {"nodes": [{"type": "text", "x": 0, "y": 0}]}),
+        ("delete_nodes", {"ids": ["node"]}),
+        ("update_theme", {"theme": "classic"}),
+    ]:
+        result = json.loads(
+            plugin._document_domains.handle_board_edit(
+                {"whiteboard_id": "board", "operation": operation, "data": data}
+            )
+        )
+        assert result["success"] is True
+    board_requests = client.requests[board_start:]
+    assert [request.http_method for request in board_requests] == [
+        HttpMethod.GET,
+        HttpMethod.GET,
+        HttpMethod.POST,
+        HttpMethod.DELETE,
+        HttpMethod.POST,
+    ]
+
+    task_start = len(client.requests)
+    task_operations = [
+        "create",
+        "update",
+        "delete",
+        "add_members",
+        "remove_members",
+        "add_reminders",
+        "remove_reminders",
+        "add_dependencies",
+        "remove_dependencies",
+        "add_tasklist",
+        "remove_tasklist",
+    ]
+    for operation in task_operations:
+        args = {"operation": operation, "data": {}}
+        if operation != "create":
+            args["task_guid"] = "task"
+        result = json.loads(plugin._document_domains.handle_task_edit(args))
+        assert result["success"] is True
+    task_requests = client.requests[task_start:]
+    assert [request.http_method for request in task_requests[:3]] == [
+        HttpMethod.POST,
+        HttpMethod.PATCH,
+        HttpMethod.DELETE,
+    ]
+    assert [request.uri.rsplit("/", 1)[-1] for request in task_requests[3:]] == task_operations[3:]

@@ -1,5 +1,29 @@
 # Changelog
 
+## 4.0.0
+
+- Add structured Block inspection with bounded automatic pagination.
+- Add document comment/reply management and document rename, copy, move, and
+  recycle-bin deletion.
+- Preserve existing inline attachments and rich-text comment references during
+  content updates, and reuse existing media tokens for display-only changes.
+- Add Sheet value/style/dimension/worksheet editing; Bitable app/table/field/
+  view/record CRUD; Board inspection/node creation/deletion/theme updates; and
+  Task v2 task/member/reminder/dependency/task-list operations.
+- Register fifteen document-domain tools and expand request-shape regression
+  coverage across every newly supported API family.
+
+## 3.1.0
+
+- Add one-call updates for up to 200 distinct document blocks, covering rich
+  text and block style, tables, grids, tasks, images, and attachments.
+- Allow image and attachment replacement from either an existing media token or
+  a safely resolved source that the tool uploads and binds automatically.
+- Add parent/index-range block deletion with validation for Feishu's exclusive
+  end index and structural deletion constraints.
+- Register eight document tools and add end-to-end request-shape, media-upload,
+  operation-matrix, and deletion regression coverage.
+
 ## 3.0.0
 
 - Add KaTeX equations, user/document mentions, and reminders as rich-text elements.

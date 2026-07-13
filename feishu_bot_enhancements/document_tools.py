@@ -66,7 +66,9 @@ def _request(
     methods = {
         "GET": HttpMethod.GET,
         "POST": HttpMethod.POST,
+        "PUT": HttpMethod.PUT,
         "PATCH": HttpMethod.PATCH,
+        "DELETE": HttpMethod.DELETE,
     }
     builder = (
         BaseRequest.builder()
@@ -159,6 +161,7 @@ _RICH_TEXT_ELEMENTS_SCHEMA = {
                     "mention_user",
                     "mention_doc",
                     "reminder",
+                    "inline_file",
                 ],
                 "default": "text",
                 "description": "Inline element type.",
@@ -202,6 +205,19 @@ _RICH_TEXT_ELEMENTS_SCHEMA = {
             "notify_time": {
                 "type": "integer",
                 "description": "Reminder notification time in milliseconds.",
+            },
+            "file_token": {
+                "type": "string",
+                "description": "Existing inline attachment token (update/move only).",
+            },
+            "source_block_id": {
+                "type": "string",
+                "description": "Existing source Block ID for an inline attachment.",
+            },
+            "comment_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Existing comment IDs to preserve or move.",
             },
             **_STYLE_SCHEMA_PROPERTIES,
         },
@@ -284,12 +300,22 @@ def _text_style(values: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
 
 
 def _rich_text_element(
-    item: dict[str, Any], index: int
+    item: dict[str, Any], index: int, *, allow_existing_inline: bool = False
 ) -> tuple[dict[str, Any] | None, str | None]:
     element_type = str(item.get("type") or "text").strip()
     style, error = _text_style(item)
     if error:
         return None, f"elements[{index}].{error}"
+
+    comment_ids = item.get("comment_ids")
+    if comment_ids is not None and (
+        not isinstance(comment_ids, list)
+        or any(not isinstance(value, str) or not value.strip() for value in comment_ids)
+    ):
+        return None, f"elements[{index}].comment_ids must contain non-empty strings"
+
+    if comment_ids is not None:
+        style["comment_ids"] = [value.strip() for value in comment_ids]
 
     if element_type in {"text", "equation"}:
         content = item.get("content")
@@ -358,11 +384,31 @@ def _rich_text_element(
                 reminder[field] = item[field]
         return {"reminder": reminder}, None
 
+    if element_type == "inline_file":
+        if not allow_existing_inline:
+            return None, (
+                f"elements[{index}].{element_type} can only preserve or move an "
+                "existing inline element during an update"
+            )
+        file_token = str(item.get("file_token") or "").strip()
+        source_block_id = str(item.get("source_block_id") or "").strip()
+        if not file_token and not source_block_id:
+            return None, (
+                f"elements[{index}] inline_file requires file_token or "
+                "source_block_id"
+            )
+        payload = {"text_element_style": style}
+        if file_token:
+            payload["file_token"] = file_token
+        if source_block_id:
+            payload["source_block_id"] = source_block_id
+        return {"file": payload}, None
+
     return None, f"elements[{index}].type is unsupported"
 
 
 def _build_text_elements(
-    args: dict[str, Any],
+    args: dict[str, Any], *, allow_existing_inline: bool = False
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     raw_elements = args.get("elements")
     if raw_elements is not None:
@@ -372,7 +418,9 @@ def _build_text_elements(
         for index, item in enumerate(raw_elements):
             if not isinstance(item, dict):
                 return None, f"elements[{index}] must be an object"
-            element, error = _rich_text_element(item, index)
+            element, error = _rich_text_element(
+                item, index, allow_existing_inline=allow_existing_inline
+            )
             if error:
                 return None, error
             elements.append(element)
@@ -665,7 +713,7 @@ def handle_doc_update_text(args: dict, **_: Any) -> str:
     block_id = str(args.get("block_id") or "").strip()
     if not document_id or not block_id:
         return tool_error("document_id and block_id are required")
-    elements, error = _build_text_elements(args)
+    elements, error = _build_text_elements(args, allow_existing_inline=True)
     if error:
         return tool_error(error)
 

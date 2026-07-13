@@ -8,6 +8,8 @@ from gateway.platform_registry import platform_registry
 from plugins.platforms.feishu import adapter as _bundled
 
 from . import document_access as _document_access
+from . import document_domains as _document_domains
+from . import document_management as _document_management
 from . import document_objects as _document_objects
 from . import document_tools as _document_tools
 from . import menu_events as _menu_events
@@ -46,6 +48,8 @@ def register(ctx) -> None:
     )
     _document_tools.register_document_tools(ctx)
     _document_objects.register_document_object_tools(ctx)
+    _document_management.register_document_management_tools(ctx)
+    _document_domains.register_document_domain_tools(ctx)
     ctx.register_hook("pre_tool_call", _document_access.inject_document_client)
     ctx.register_hook("post_tool_call", _document_access.clear_document_client)
 
@@ -57,6 +61,8 @@ __all__ = [
     "_build_adapter",
     "_bundled",
     "_document_access",
+    "_document_domains",
+    "_document_management",
     "_document_objects",
     "_document_tools",
     "_menu_events",

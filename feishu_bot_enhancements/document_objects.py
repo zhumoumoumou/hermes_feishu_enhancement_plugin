@@ -1,4 +1,4 @@
-"""Structured Block and media-object insertion for Feishu docx documents."""
+"""Structured Block and media-object CRUD for Feishu docx documents."""
 
 from __future__ import annotations
 
@@ -30,6 +30,13 @@ from .document_tools import (
 
 
 _MAX_MEDIA_BYTES = 20 * 1024 * 1024
+_BATCH_UPDATE_BLOCKS_URI = (
+    "/open-apis/docx/v1/documents/:document_id/blocks/batch_update"
+)
+_BATCH_DELETE_CHILDREN_URI = (
+    "/open-apis/docx/v1/documents/:document_id/blocks/:block_id/children/batch_delete"
+)
+_GET_BLOCK_URI = "/open-apis/docx/v1/documents/:document_id/blocks/:block_id"
 
 _HEADING_BLOCK_TYPES = {f"heading{level}": level + 2 for level in range(1, 10)}
 _OBJECT_BLOCK_TYPES = {
@@ -173,6 +180,108 @@ FEISHU_DOC_INSERT_MEDIA_SCHEMA = {
             },
         },
         "required": ["document_id", "source"],
+    },
+}
+
+
+_UPDATE_OPERATIONS = [
+    "update_text_elements",
+    "update_text_style",
+    "update_text",
+    "update_table_property",
+    "insert_table_row",
+    "insert_table_column",
+    "delete_table_rows",
+    "delete_table_columns",
+    "merge_table_cells",
+    "unmerge_table_cells",
+    "insert_grid_column",
+    "delete_grid_column",
+    "update_grid_column_width_ratio",
+    "replace_image",
+    "replace_file",
+    "update_task",
+]
+
+FEISHU_DOC_UPDATE_BLOCKS_SCHEMA = {
+    "name": "feishu_doc_update_blocks",
+    "description": (
+        "Update 1-200 distinct Feishu docx blocks in one API call. Supports "
+        "rich text/formulas and block style, table properties/rows/columns/cell "
+        "merging, grid columns, tasks, and image/file replacement. For media, "
+        "supply data.token or source; source is uploaded automatically. If "
+        "both are omitted, the existing media token is fetched and reused."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "document_id": {"type": "string"},
+            "updates": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 200,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "block_id": {"type": "string"},
+                        "operation": {
+                            "type": "string",
+                            "enum": _UPDATE_OPERATIONS,
+                        },
+                        "data": {
+                            "type": "object",
+                            "description": (
+                                "Operation payload. Text operations accept content/elements; "
+                                "style operations use style plus fields 1-7. Table/grid "
+                                "operations use the official row/column indexes. Media "
+                                "replacement accepts token and image width/height/align/caption."
+                            ),
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": (
+                                "For replace_image/replace_file, upload this source and use "
+                                "its token. Images accept safe URL/data/local sources; files "
+                                "accept workspace/cache paths."
+                            ),
+                        },
+                        "file_name": {
+                            "type": "string",
+                            "description": "Optional uploaded media filename (1-250 chars).",
+                        },
+                    },
+                    "required": ["block_id", "operation", "data"],
+                },
+            },
+        },
+        "required": ["document_id", "updates"],
+    },
+}
+
+FEISHU_DOC_DELETE_BLOCKS_SCHEMA = {
+    "name": "feishu_doc_delete_blocks",
+    "description": (
+        "Delete a contiguous range of child blocks from a Feishu docx parent. "
+        "Indexes are zero-based and [start_index, end_index) is left-closed, "
+        "right-open. Delete table rows/columns or grid columns with "
+        "feishu_doc_update_blocks instead."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "document_id": {"type": "string"},
+            "parent_block_id": {
+                "type": "string",
+                "description": "Defaults to the document root block.",
+            },
+            "start_index": {"type": "integer", "minimum": 0},
+            "end_index": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Exclusive end index; must exceed start_index.",
+            },
+        },
+        "required": ["document_id", "start_index", "end_index"],
     },
 }
 
@@ -587,6 +696,453 @@ async def handle_doc_insert_media(args: dict, **kwargs: Any) -> str:
     )
 
 
+_TEXT_STYLE_FIELDS = {
+    "align": 1,
+    "done": 2,
+    "folded": 3,
+    "language": 4,
+    "wrap": 5,
+    "background_color": 6,
+    "indentation_level": 7,
+}
+_BLOCK_BACKGROUND_COLORS = {
+    "LightGrayBackground",
+    "LightRedBackground",
+    "LightOrangeBackground",
+    "LightYellowBackground",
+    "LightGreenBackground",
+    "LightBlueBackground",
+    "LightPurpleBackground",
+    "PaleGrayBackground",
+    "DarkGrayBackground",
+    "DarkRedBackground",
+    "DarkOrangeBackground",
+    "DarkYellowBackground",
+    "DarkGreenBackground",
+    "DarkBlueBackground",
+    "DarkPurpleBackground",
+}
+
+
+def _strict_integer(value: Any, field: str, minimum: int) -> tuple[int | None, str | None]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None, f"{field} must be an integer"
+    if value < minimum:
+        return None, f"{field} must be at least {minimum}"
+    return value, None
+
+
+def _unexpected_fields(data: dict[str, Any], allowed: set[str]) -> str | None:
+    unexpected = sorted(set(data) - allowed)
+    if unexpected:
+        return f"unsupported data fields: {', '.join(unexpected)}"
+    return None
+
+
+def _build_text_style_update(
+    data: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    style = data.get("style")
+    if not isinstance(style, dict) or not style:
+        return None, "data.style must be a non-empty object"
+    unexpected = _unexpected_fields(style, set(_TEXT_STYLE_FIELDS))
+    if unexpected:
+        return None, f"data.style {unexpected}"
+
+    if "align" in style and (
+        isinstance(style["align"], bool) or style["align"] not in {1, 2, 3}
+    ):
+        return None, "data.style.align must be 1, 2, or 3"
+    for field in ("done", "folded", "wrap"):
+        if field in style and not isinstance(style[field], bool):
+            return None, f"data.style.{field} must be a boolean"
+    if "language" in style and (
+        isinstance(style["language"], bool)
+        or not isinstance(style["language"], int)
+        or not 1 <= style["language"] <= 75
+    ):
+        return None, "data.style.language must be between 1 and 75"
+    if "background_color" in style and style["background_color"] not in (
+        _BLOCK_BACKGROUND_COLORS
+    ):
+        return None, "data.style.background_color is unsupported"
+    if "indentation_level" in style and style["indentation_level"] not in {
+        "NoIndent",
+        "OneLevelIndent",
+    }:
+        return None, "data.style.indentation_level is unsupported"
+
+    raw_fields = data.get("fields")
+    if raw_fields is None:
+        fields = [_TEXT_STYLE_FIELDS[field] for field in style]
+    elif not isinstance(raw_fields, list) or not raw_fields:
+        return None, "data.fields must be a non-empty array"
+    else:
+        fields = raw_fields
+    if any(
+        isinstance(field, bool) or not isinstance(field, int) or field not in range(1, 8)
+        for field in fields
+    ):
+        return None, "data.fields may contain only integers 1-7"
+    if len(fields) != len(set(fields)):
+        return None, "data.fields must not contain duplicates"
+    expected = {_TEXT_STYLE_FIELDS[field] for field in style}
+    if not expected.issubset(set(fields)):
+        return None, "data.fields must include every supplied style field"
+    return {"style": dict(style), "fields": fields}, None
+
+
+def _build_range_operation(
+    data: dict[str, Any],
+    start_field: str,
+    end_field: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    unexpected = _unexpected_fields(data, {start_field, end_field})
+    if unexpected:
+        return None, unexpected
+    start, error = _strict_integer(data.get(start_field), f"data.{start_field}", 0)
+    if error:
+        return None, error
+    end, error = _strict_integer(data.get(end_field), f"data.{end_field}", 1)
+    if error:
+        return None, error
+    if start >= end:
+        return None, f"data.{start_field} must be less than data.{end_field}"
+    return {start_field: start, end_field: end}, None
+
+
+def _build_update_request(
+    spec: Any, index: int
+) -> tuple[dict[str, Any] | None, str | None]:
+    prefix = f"updates[{index}]"
+    if not isinstance(spec, dict):
+        return None, f"{prefix} must be an object"
+    block_id = str(spec.get("block_id") or "").strip()
+    operation = str(spec.get("operation") or "").strip()
+    data = spec.get("data")
+    if not block_id:
+        return None, f"{prefix}.block_id is required"
+    if operation not in _UPDATE_OPERATIONS:
+        return None, f"{prefix}.operation is unsupported"
+    if not isinstance(data, dict):
+        return None, f"{prefix}.data must be an object"
+
+    payload: dict[str, Any] | None
+    error: str | None = None
+    if operation == "update_text_elements":
+        allowed = {"content", "elements", *_STYLE_SCHEMA_PROPERTIES}
+        error = _unexpected_fields(data, allowed)
+        if error is None:
+            elements, error = _build_text_elements(
+                data, allow_existing_inline=True
+            )
+            payload = {"elements": elements} if error is None else None
+        else:
+            payload = None
+    elif operation in {"update_text_style", "update_text"}:
+        allowed = {"style", "fields"}
+        if operation == "update_text":
+            allowed.update({"content", "elements", *_STYLE_SCHEMA_PROPERTIES})
+        error = _unexpected_fields(data, allowed)
+        payload = None
+        if error is None:
+            style_payload, error = _build_text_style_update(data)
+            if error is None and operation == "update_text":
+                elements, error = _build_text_elements(
+                    data, allow_existing_inline=True
+                )
+                if error is None:
+                    payload = {"elements": elements, **style_payload}
+            elif error is None:
+                payload = style_payload
+    elif operation == "update_table_property":
+        allowed = {"column_width", "column_index", "header_row", "header_column"}
+        error = _unexpected_fields(data, allowed)
+        payload = dict(data)
+        if error is None and not payload:
+            error = "data must contain a table property"
+        if error is None and "column_width" in payload:
+            _, error = _strict_integer(payload["column_width"], "data.column_width", 50)
+        if error is None and "column_index" in payload:
+            _, error = _strict_integer(payload["column_index"], "data.column_index", 0)
+        if error is None:
+            for field in ("header_row", "header_column"):
+                if field in payload and not isinstance(payload[field], bool):
+                    error = f"data.{field} must be a boolean"
+                    break
+        if error is None and ("column_width" in payload) != ("column_index" in payload):
+            error = "data.column_width and data.column_index must be supplied together"
+    elif operation in {"insert_table_row", "insert_table_column"}:
+        field = "row_index" if operation.endswith("row") else "column_index"
+        error = _unexpected_fields(data, {field})
+        value = None
+        if error is None:
+            value, error = _strict_integer(data.get(field), f"data.{field}", -1)
+        payload = {field: value} if error is None else None
+    elif operation in {"delete_table_rows", "delete_table_columns"}:
+        stem = "row" if operation.endswith("rows") else "column"
+        payload, error = _build_range_operation(
+            data, f"{stem}_start_index", f"{stem}_end_index"
+        )
+    elif operation == "merge_table_cells":
+        allowed = {
+            "row_start_index",
+            "row_end_index",
+            "column_start_index",
+            "column_end_index",
+        }
+        error = _unexpected_fields(data, allowed)
+        payload = None
+        if error is None:
+            rows, error = _build_range_operation(
+                {key: data[key] for key in ("row_start_index", "row_end_index")},
+                "row_start_index",
+                "row_end_index",
+            )
+            if error is None:
+                columns, error = _build_range_operation(
+                    {key: data[key] for key in ("column_start_index", "column_end_index")},
+                    "column_start_index",
+                    "column_end_index",
+                )
+                if error is None:
+                    payload = {**rows, **columns}
+    elif operation == "unmerge_table_cells":
+        error = _unexpected_fields(data, {"row_index", "column_index"})
+        payload = None
+        if error is None:
+            row, error = _strict_integer(data.get("row_index"), "data.row_index", 0)
+            if error is None:
+                column, error = _strict_integer(
+                    data.get("column_index"), "data.column_index", 0
+                )
+                if error is None:
+                    payload = {"row_index": row, "column_index": column}
+    elif operation in {"insert_grid_column", "delete_grid_column"}:
+        error = _unexpected_fields(data, {"column_index"})
+        payload = None
+        if error is None:
+            column, error = _strict_integer(
+                data.get("column_index"), "data.column_index", -1
+            )
+            if error is None and operation == "insert_grid_column" and column == 0:
+                error = "data.column_index cannot be 0 when inserting a grid column"
+            if error is None:
+                payload = {"column_index": column}
+    elif operation == "update_grid_column_width_ratio":
+        error = _unexpected_fields(data, {"width_ratios"})
+        ratios = data.get("width_ratios")
+        payload = None
+        if error is None and (
+            not isinstance(ratios, list)
+            or not ratios
+            or any(
+                isinstance(ratio, bool)
+                or not isinstance(ratio, int)
+                or not 1 <= ratio <= 99
+                for ratio in ratios
+            )
+        ):
+            error = "data.width_ratios must be a non-empty array of integers 1-99"
+        if error is None:
+            payload = {"width_ratios": ratios}
+    elif operation == "replace_image":
+        allowed = {"token", "width", "height", "align", "caption"}
+        error = _unexpected_fields(data, allowed)
+        payload = dict(data)
+        for field in ("width", "height"):
+            if error is None and field in payload:
+                _, error = _strict_integer(payload[field], f"data.{field}", 1)
+        if error is None and "align" in payload and (
+            isinstance(payload["align"], bool) or payload["align"] not in {1, 2, 3}
+        ):
+            error = "data.align must be 1, 2, or 3"
+        if error is None and "caption" in payload:
+            caption = payload["caption"]
+            if isinstance(caption, str) and caption.strip():
+                payload["caption"] = {"content": caption}
+            elif not (
+                isinstance(caption, dict)
+                and isinstance(caption.get("content"), str)
+                and caption["content"].strip()
+            ):
+                error = "data.caption must be non-empty text or {content: text}"
+        if "token" in payload:
+            payload["token"] = str(payload["token"]).strip()
+    elif operation == "replace_file":
+        error = _unexpected_fields(data, {"token"})
+        payload = dict(data)
+        if "token" in payload:
+            payload["token"] = str(payload["token"]).strip()
+    else:  # update_task
+        error = _unexpected_fields(data, {"task_id", "folded"})
+        payload = dict(data)
+        if error is None and not payload:
+            error = "data must contain task_id or folded"
+        if error is None and "task_id" in payload and not str(
+            payload["task_id"] or ""
+        ).strip():
+            error = "data.task_id must be non-empty"
+        if error is None and "folded" in payload and not isinstance(
+            payload["folded"], bool
+        ):
+            error = "data.folded must be a boolean"
+
+    if error:
+        return None, f"{prefix}.{error}"
+    return {"block_id": block_id, operation: payload}, None
+
+
+async def handle_doc_update_blocks(args: dict, **kwargs: Any) -> str:
+    document_id = str(args.get("document_id") or "").strip()
+    raw_updates = args.get("updates")
+    if not document_id:
+        return tool_error("document_id is required")
+    if not isinstance(raw_updates, list) or not 1 <= len(raw_updates) <= 200:
+        return tool_error("updates must contain 1-200 items")
+
+    requests: list[dict[str, Any]] = []
+    seen_block_ids: set[str] = set()
+    for index, spec in enumerate(raw_updates):
+        request, error = _build_update_request(spec, index)
+        if error:
+            return tool_error(error)
+        block_id = request["block_id"]
+        if block_id in seen_block_ids:
+            return tool_error(
+                f"updates[{index}].block_id duplicates {block_id}; Feishu allows "
+                "only one update per block in a batch"
+            )
+        seen_block_ids.add(block_id)
+        requests.append(request)
+
+    client, error = _client_or_error()
+    if error:
+        return error
+    uploaded_media: list[dict[str, str]] = []
+    for index, (spec, request) in enumerate(zip(raw_updates, requests)):
+        operation = str(spec["operation"])
+        source = str(spec.get("source") or "").strip()
+        if operation in {"replace_image", "replace_file"} and not source and not str(
+            request[operation].get("token") or ""
+        ).strip():
+            kind = "image" if operation == "replace_image" else "file"
+            code, msg, block_data = await asyncio.to_thread(
+                _request,
+                client,
+                "GET",
+                _GET_BLOCK_URI,
+                paths={
+                    "document_id": document_id,
+                    "block_id": request["block_id"],
+                },
+                queries=[("document_revision_id", "-1")],
+            )
+            block = block_data.get("block", block_data)
+            media_data = block.get(kind) if isinstance(block, dict) else None
+            token = (
+                str(media_data.get("token") or "")
+                if isinstance(media_data, dict)
+                else ""
+            )
+            if code != 0 or not token:
+                return tool_error(
+                    f"Read updates[{index}] existing {kind} token failed: "
+                    f"code={code} msg={msg}"
+                )
+            request[operation]["token"] = token
+        if not source:
+            continue
+        if operation not in {"replace_image", "replace_file"}:
+            return tool_error(f"updates[{index}].source is only valid for media replacement")
+        kind = "image" if operation == "replace_image" else "file"
+        try:
+            media, _mime, inferred_name = await _resolve_media_source(
+                kind,
+                source,
+                task_id=str(kwargs.get("task_id") or ""),
+                cwd=str(kwargs.get("cwd") or ""),
+            )
+        except Exception as exc:
+            return tool_error(f"Unable to read updates[{index}] media source: {exc}")
+        file_name = str(spec.get("file_name") or inferred_name).strip()
+        if not file_name or len(file_name) > 250 or Path(file_name).name != file_name:
+            return tool_error(
+                f"updates[{index}].file_name must be a basename of 1-250 characters"
+            )
+        code, msg, upload_data = await asyncio.to_thread(
+            _upload_media,
+            client,
+            data=media,
+            file_name=file_name,
+            parent_type=f"docx_{kind}",
+            block_id=request["block_id"],
+            document_id=document_id,
+        )
+        token = str(upload_data.get("file_token") or "")
+        if code != 0 or not token:
+            return tool_error(
+                f"Upload updates[{index}] {kind} failed: code={code} msg={msg}"
+            )
+        request[operation]["token"] = token
+        uploaded_media.append(
+            {
+                "block_id": request["block_id"],
+                "kind": kind,
+                "file_name": file_name,
+                "file_token": token,
+            }
+        )
+
+    code, msg, data = await asyncio.to_thread(
+        _request,
+        client,
+        "PATCH",
+        _BATCH_UPDATE_BLOCKS_URI,
+        paths={"document_id": document_id},
+        queries=[("document_revision_id", "-1")],
+        body={"requests": requests},
+    )
+    if code != 0:
+        return tool_error(f"Update document blocks failed: code={code} msg={msg}")
+    return tool_result(
+        success=True,
+        updated_block_count=len(requests),
+        uploaded_media=uploaded_media,
+        **data,
+    )
+
+
+def handle_doc_delete_blocks(args: dict, **_: Any) -> str:
+    document_id = str(args.get("document_id") or "").strip()
+    parent_block_id = str(args.get("parent_block_id") or document_id).strip()
+    if not document_id or not parent_block_id:
+        return tool_error("document_id is required")
+    start, error = _strict_integer(args.get("start_index"), "start_index", 0)
+    if error:
+        return tool_error(error)
+    end, error = _strict_integer(args.get("end_index"), "end_index", 1)
+    if error:
+        return tool_error(error)
+    if start >= end:
+        return tool_error("start_index must be less than end_index")
+
+    client, error = _client_or_error()
+    if error:
+        return error
+    code, msg, data = _request(
+        client,
+        "DELETE",
+        _BATCH_DELETE_CHILDREN_URI,
+        paths={"document_id": document_id, "block_id": parent_block_id},
+        queries=[("document_revision_id", "-1")],
+        body={"start_index": start, "end_index": end},
+    )
+    if code != 0:
+        return tool_error(f"Delete document blocks failed: code={code} msg={msg}")
+    return tool_result(success=True, deleted_count=end - start, **data)
+
+
 def register_document_object_tools(ctx: Any) -> None:
     ctx.register_tool(
         name="feishu_doc_insert_blocks",
@@ -610,10 +1166,34 @@ def register_document_object_tools(ctx: Any) -> None:
         description="Insert an image or attachment into a Feishu document",
         emoji="🖼️",
     )
+    ctx.register_tool(
+        name="feishu_doc_update_blocks",
+        toolset="feishu_doc",
+        schema=FEISHU_DOC_UPDATE_BLOCKS_SCHEMA,
+        handler=handle_doc_update_blocks,
+        check_fn=_check_feishu,
+        requires_env=[],
+        is_async=True,
+        description="Batch-update Feishu document blocks and media",
+        emoji="✏️",
+    )
+    ctx.register_tool(
+        name="feishu_doc_delete_blocks",
+        toolset="feishu_doc",
+        schema=FEISHU_DOC_DELETE_BLOCKS_SCHEMA,
+        handler=handle_doc_delete_blocks,
+        check_fn=_check_feishu,
+        requires_env=[],
+        is_async=False,
+        description="Delete a range of Feishu document blocks",
+        emoji="🗑️",
+    )
 
 
 __all__ = [
+    "handle_doc_delete_blocks",
     "handle_doc_insert_blocks",
     "handle_doc_insert_media",
+    "handle_doc_update_blocks",
     "register_document_object_tools",
 ]

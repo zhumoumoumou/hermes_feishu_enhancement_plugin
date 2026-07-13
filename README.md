@@ -13,7 +13,7 @@ revision is automatically compatible.
 | Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
 | Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
 | Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
-| This enhancement plugin | `feishu-bot-enhancements 3.0.0` | `plugin.yaml` |
+| This enhancement plugin | `feishu-bot-enhancements 4.0.0` | `plugin.yaml` |
 
 The plugin composes the bundled Feishu adapter and imports its public runtime
 entry points instead of patching Hermes source. When upgrading Hermes or the
@@ -45,7 +45,7 @@ accessible to that app. Feishu remains the authorization boundary.
 
 ### Document creation, rich editing, objects, and sharing
 
-Adds six tools to the existing `feishu_doc` toolset:
+Adds fifteen tools to the existing `feishu_doc` toolset:
 
 - `feishu_doc_create` creates an app-owned docx document.
 - `feishu_doc_append_text` appends a text-like block or level 1-9 heading.
@@ -55,6 +55,17 @@ Adds six tools to the existing `feishu_doc` toolset:
 - `feishu_doc_insert_blocks` inserts up to 50 mixed text and structured blocks
   in one request.
 - `feishu_doc_insert_media` creates, uploads, and binds an image or attachment.
+- `feishu_doc_update_blocks` updates up to 200 distinct blocks in one request,
+  including rich text, structural objects, and uploaded media replacement.
+- `feishu_doc_delete_blocks` deletes a contiguous child-block range from a
+  document or container.
+- `feishu_doc_get_blocks` gets one structured Block or traverses the Block tree.
+- `feishu_doc_comments` lists and manages full-document comments and replies.
+- `feishu_doc_manage` renames, copies, moves, or deletes a document.
+- `feishu_sheet_edit` edits Sheet cells, styles, dimensions, and worksheets.
+- `feishu_bitable_edit` manages Bitable metadata, tables, fields, views, and records.
+- `feishu_board_edit` inspects/creates/deletes Board nodes and changes its theme.
+- `feishu_task_edit` creates and manages Task v2 tasks and their relationships.
 
 Append and update accept either `content` for a single-style run or `elements`
 for mixed formatting within one block. Supported inline styles are bold, italic,
@@ -65,7 +76,9 @@ bold: true`; mixed content can use `elements: [{"content": "Important",
 styles supplied in that update.
 
 Inline `elements` also support formulas (`type: "equation"`, with KaTeX in
-`content`), user mentions, document mentions, and reminders. Text-like blocks
+`content`), user mentions, document mentions, reminders, and existing inline
+attachments during update. Existing `comment_ids` can be retained in the
+element style when replacing rich content. Text-like blocks
 cover normal text, headings 1-9, unordered and ordered lists, code, quote, and
 todo. The batch block tool additionally covers the public block types that
 Feishu currently allows callers to create directly: Bitable, Callout, ChatCard,
@@ -107,17 +120,109 @@ tools deliberately operate with the connected app's `tenant_access_token`.
 Wiki sub-page lists work only inside eligible knowledge-base documents, and
 message-link previews remain subject to Feishu's rule that the caller created
 the referenced message link. Creating an empty Board needs no extra scope;
-editing its internal nodes later requires the separate Board node-write scope.
+inspecting or editing its internal nodes uses the separate Board scopes below.
+
+The batch update tool exposes every Block update operation available to this
+tenant-token workflow: replace rich-text elements (including equations), update
+text-block style, update both content and style, change table properties, insert
+or delete table rows/columns, merge or unmerge cells, insert/delete/resize grid
+columns, update an existing Task block, and replace an image or attachment.
+Each update item uses `block_id`, an `operation`, and its operation-specific
+`data`. Feishu does not allow the same Block ID to appear twice in one batch;
+the tool rejects that case before sending the request. For `replace_image` and
+`replace_file`, pass an existing token in `data.token`, pass `source` and let
+the tool resolve/upload/bind new media, or omit both when changing only image
+display properties so the current block token is reused automatically.
+
+Block deletion follows Feishu's parent-child model rather than accepting a
+standalone block ID. Supply `parent_block_id` (the document root is the default)
+and zero-based `start_index`/`end_index`; the interval is left-closed and
+right-open, so `0` through `1` deletes only the first child. Table rows and
+columns and Grid columns are not deletable through this endpoint—use the
+corresponding `delete_table_rows`, `delete_table_columns`, or
+`delete_grid_column` update operation. Feishu also prevents deleting every
+child of TableCell, GridColumn, and Callout containers.
+
+Batch update example:
+
+```json
+{
+  "document_id": "doxcn...",
+  "updates": [
+    {
+      "block_id": "doxcn_text...",
+      "operation": "update_text",
+      "data": {
+        "elements": [
+          {"content": "Area: ", "bold": true},
+          {"type": "equation", "content": "A=\\pi r^2"}
+        ],
+        "style": {"align": 2}
+      }
+    },
+    {
+      "block_id": "doxcn_table...",
+      "operation": "merge_table_cells",
+      "data": {
+        "row_start_index": 0,
+        "row_end_index": 1,
+        "column_start_index": 0,
+        "column_end_index": 2
+      }
+    }
+  ]
+}
+```
+
+Structured inspection returns the IDs, child order, media tokens, table cells,
+and embedded-object tokens needed to build safe updates. Comment actions cover
+listing, full-document comment creation, replies, reply edits/deletion, and
+solve/reopen. Document lifecycle actions cover title changes, asynchronous
+copy, folder moves, and recycle-bin deletion.
+
+Embedded-object editing uses one operation-oriented tool per API family:
+
+- Sheet writes or appends values/formulas, applies styles, adds/inserts/deletes/
+  moves rows or columns, and batches worksheet add/copy/delete requests.
+- Bitable updates app metadata and provides table, field, view, and batch record
+  create/update/delete operations.
+- Board lists nodes or the theme, creates nodes, recursively deletes nodes, and
+  switches theme.
+- Task v2 creates/updates/deletes tasks and adds/removes members, reminders,
+  dependencies, and task-list membership.
+
+These tools send documented Feishu request objects in `data`, so new field
+types do not require a plugin release. They still validate routing IDs, batch
+limits, and the operation-specific envelope before making a request. Feishu
+does not currently publish APIs for moving an existing docx Block, changing a
+Block's type in place, or updating an existing Board node's properties. Those
+operations are intentionally not simulated by destructive delete/recreate.
 
 Enable these least-privilege scopes in **Feishu Developer Console → Permissions
-& Scopes → Docs**, then publish a new app version:
+& Scopes**, then publish a new app version. Only enable the rows for tools you
+intend to use:
 
 - `docx:document` — **Create and edit new documents**. This covers document
-  creation, block creation, block updates, and reading documents the app can
-  access.
+  creation, block creation, block updates and deletion, and reading documents
+  the app can access.
 - `docs:permission.member:create` — **Add cloud document collaborators**.
 - `docs:document.media:upload` — **Upload images and attachments to cloud
-  documents**. Required only for `feishu_doc_insert_media`.
+  documents**. Required for `feishu_doc_insert_media` and for source-based
+  image/file replacement in `feishu_doc_update_blocks`.
+- `docs:document.comment:read` and
+  `docs:document.comment:write_only` — list comments and add/update/delete
+  comments or replies, including solve/reopen.
+- `docs:document:copy`, `space:document:move`, and `space:document:delete` —
+  copy, move, and delete whole documents respectively. Rename remains covered
+  by `docx:document`.
+- `sheets:spreadsheet` — edit Sheet content and structure. Use
+  `sheets:spreadsheet:write_only` instead if no Sheet read API is needed.
+- `bitable:app` — edit Bitable apps, tables, fields, views, and records.
+- `board:whiteboard:node:read`, `board:whiteboard:node:create`, and
+  `board:whiteboard:node:delete` — inspect nodes/theme, create nodes/change the
+  theme, and delete nodes respectively.
+- `task:task:write` — create and manage Task v2 tasks. With a tenant token, the
+  app can operate only on tasks for which it is a member or otherwise authorized.
 
 Documents created with `tenant_access_token` belong to the app and live in the
 app's cloud space. Users cannot open them until the app adds them as a
@@ -136,6 +241,8 @@ feishu-bot-enhancements/
 │   ├── document_access.py              # Normal-chat document access
 │   ├── document_tools.py               # Create, edit, and share documents
 │   ├── document_objects.py             # Blocks, formulas, images, attachments
+│   ├── document_management.py          # Block inspection, comments, lifecycle
+│   ├── document_domains.py             # Sheet, Bitable, Board, and Task APIs
 │   ├── plugin.py                       # Adapter composition and registration
 │   └── menu_events.py                  # Custom-menu enhancement
 ├── tests/
