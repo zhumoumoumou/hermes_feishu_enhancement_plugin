@@ -129,10 +129,10 @@ _STYLE_SCHEMA_PROPERTIES = {
     },
     "background_color": {
         "type": "integer",
-        "enum": list(range(1, 15)),
+        "enum": list(range(1, 16)),
         "description": (
             "Background color: 1-7 light pink/orange/yellow/green/blue/"
-            "purple/gray; 8-14 the corresponding dark colors."
+            "purple/gray; 8-14 the corresponding dark colors; 15 light gray."
         ),
     },
     "link_url": {
@@ -145,16 +145,98 @@ _RICH_TEXT_ELEMENTS_SCHEMA = {
     "type": "array",
     "minItems": 1,
     "description": (
-        "Styled text segments. When supplied, this takes precedence over content "
+        "Rich inline elements. When supplied, this takes precedence over content "
         "and the block-level style fields."
     ),
     "items": {
         "type": "object",
         "properties": {
-            "content": {"type": "string", "description": "Segment text."},
+            "type": {
+                "type": "string",
+                "enum": [
+                    "text",
+                    "equation",
+                    "mention_user",
+                    "mention_doc",
+                    "reminder",
+                ],
+                "default": "text",
+                "description": "Inline element type.",
+            },
+            "content": {
+                "type": "string",
+                "description": "Text or KaTeX equation content.",
+            },
+            "user_id": {
+                "type": "string",
+                "description": "Open ID for a mention_user element.",
+            },
+            "token": {
+                "type": "string",
+                "description": "Document token for a mention_doc element.",
+            },
+            "obj_type": {
+                "type": "integer",
+                "enum": [1, 3, 8, 11, 12, 15, 16, 22],
+                "description": "Mentioned document type; 22 means docx.",
+            },
+            "url": {
+                "type": "string",
+                "description": "Optional raw document URL for mention_doc.",
+            },
+            "fallback_type": {
+                "type": "string",
+                "enum": ["FallbackToLink", "FallbackToText"],
+                "description": "Fallback when the mentioned document is unavailable.",
+            },
+            "create_user_id": {
+                "type": "string",
+                "description": "Creator Open ID for a reminder.",
+            },
+            "is_notify": {"type": "boolean"},
+            "is_whole_day": {"type": "boolean"},
+            "expire_time": {
+                "type": "integer",
+                "description": "Reminder event time in milliseconds.",
+            },
+            "notify_time": {
+                "type": "integer",
+                "description": "Reminder notification time in milliseconds.",
+            },
             **_STYLE_SCHEMA_PROPERTIES,
         },
-        "required": ["content"],
+    },
+}
+
+_TEXT_BLOCK_TYPES = {
+    "text": 2,
+    "bullet": 12,
+    "ordered": 13,
+    "code": 14,
+    "quote": 15,
+    "todo": 17,
+}
+
+_TEXT_BLOCK_STYLE_SCHEMA_PROPERTIES = {
+    "align": {
+        "type": "integer",
+        "enum": [1, 2, 3],
+        "description": "Block alignment: 1 left, 2 center, 3 right.",
+    },
+    "folded": {"type": "boolean", "description": "Fold the block."},
+    "done": {
+        "type": "boolean",
+        "description": "Completion state for a todo block.",
+    },
+    "language": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 75,
+        "description": "Feishu CodeLanguage enum for a code block.",
+    },
+    "wrap": {
+        "type": "boolean",
+        "description": "Enable line wrapping for a code block.",
     },
 }
 
@@ -182,7 +264,7 @@ def _text_style(values: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
             return {}, f"{field} must be a boolean"
         style[field] = value
 
-    for field, maximum in (("text_color", 7), ("background_color", 14)):
+    for field, maximum in (("text_color", 7), ("background_color", 15)):
         if field not in values or values[field] is None:
             continue
         value = values[field]
@@ -201,6 +283,84 @@ def _text_style(values: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     return style, None
 
 
+def _rich_text_element(
+    item: dict[str, Any], index: int
+) -> tuple[dict[str, Any] | None, str | None]:
+    element_type = str(item.get("type") or "text").strip()
+    style, error = _text_style(item)
+    if error:
+        return None, f"elements[{index}].{error}"
+
+    if element_type in {"text", "equation"}:
+        content = item.get("content")
+        if not isinstance(content, str) or not content:
+            return None, f"elements[{index}].content must be non-empty text"
+        key = "text_run" if element_type == "text" else "equation"
+        return {key: {"content": content, "text_element_style": style}}, None
+
+    if element_type == "mention_user":
+        user_id = str(item.get("user_id") or "").strip()
+        if not user_id:
+            return None, f"elements[{index}].user_id is required"
+        return {
+            "mention_user": {
+                "user_id": user_id,
+                "text_element_style": style,
+            }
+        }, None
+
+    if element_type == "mention_doc":
+        token = str(item.get("token") or "").strip()
+        url = str(item.get("url") or "").strip()
+        obj_type = item.get("obj_type")
+        if not token or obj_type not in {1, 3, 8, 11, 12, 15, 16, 22}:
+            return None, (
+                f"elements[{index}] mention_doc requires token and a supported "
+                "obj_type"
+            )
+        mention_doc: dict[str, Any] = {
+            "token": token,
+            "obj_type": obj_type,
+            "text_element_style": style,
+        }
+        if url:
+            mention_doc["url"] = quote(url, safe="")
+        if "fallback_type" in item:
+            fallback_type = item["fallback_type"]
+            if fallback_type not in {"FallbackToLink", "FallbackToText"}:
+                return None, f"elements[{index}].fallback_type is unsupported"
+            mention_doc["fallback_type"] = fallback_type
+        return {"mention_doc": mention_doc}, None
+
+    if element_type == "reminder":
+        create_user_id = str(item.get("create_user_id") or "").strip()
+        expire_time = item.get("expire_time")
+        notify_time = item.get("notify_time")
+        if not create_user_id:
+            return None, f"elements[{index}].create_user_id is required"
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (expire_time, notify_time)
+        ):
+            return None, (
+                f"elements[{index}].expire_time and notify_time must be integers"
+            )
+        reminder = {
+            "create_user_id": create_user_id,
+            "expire_time": str(expire_time),
+            "notify_time": str(notify_time),
+            "text_element_style": style,
+        }
+        for field in ("is_notify", "is_whole_day"):
+            if field in item:
+                if not isinstance(item[field], bool):
+                    return None, f"elements[{index}].{field} must be a boolean"
+                reminder[field] = item[field]
+        return {"reminder": reminder}, None
+
+    return None, f"elements[{index}].type is unsupported"
+
+
 def _build_text_elements(
     args: dict[str, Any],
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
@@ -212,13 +372,10 @@ def _build_text_elements(
         for index, item in enumerate(raw_elements):
             if not isinstance(item, dict):
                 return None, f"elements[{index}] must be an object"
-            content = item.get("content")
-            if not isinstance(content, str) or not content:
-                return None, f"elements[{index}].content must be non-empty text"
-            style, error = _text_style(item)
+            element, error = _rich_text_element(item, index)
             if error:
-                return None, f"elements[{index}].{error}"
-            elements.extend(_text_elements(content, style))
+                return None, error
+            elements.append(element)
         return elements, None
 
     content = args.get("content")
@@ -228,6 +385,37 @@ def _build_text_elements(
     if error:
         return None, error
     return _text_elements(content, style), None
+
+
+def _text_block_style(
+    args: dict[str, Any], block_type: str
+) -> tuple[dict[str, Any], str | None]:
+    style: dict[str, Any] = {}
+    for field in ("folded", "done", "wrap"):
+        if field not in args:
+            continue
+        if not isinstance(args[field], bool):
+            return {}, f"{field} must be a boolean"
+        style[field] = args[field]
+
+    if "align" in args:
+        align = args["align"]
+        if isinstance(align, bool) or align not in {1, 2, 3}:
+            return {}, "align must be 1, 2, or 3"
+        style["align"] = align
+    if "language" in args:
+        language = args["language"]
+        if isinstance(language, bool) or not isinstance(language, int):
+            return {}, "language must be an integer"
+        if not 1 <= language <= 75:
+            return {}, "language must be between 1 and 75"
+        style["language"] = language
+
+    if "done" in style and block_type != "todo":
+        return {}, "done is only valid for todo blocks"
+    if ("language" in style or "wrap" in style) and block_type != "code":
+        return {}, "language and wrap are only valid for code blocks"
+    return style, None
 
 
 def _decode_entry(value: Any) -> dict[str, Any] | None:
@@ -357,7 +545,16 @@ FEISHU_DOC_APPEND_TEXT_SCHEMA = {
                     "Optional heading level from 1 to 9. Omit for normal text."
                 ),
             },
+            "block_type": {
+                "type": "string",
+                "enum": list(_TEXT_BLOCK_TYPES),
+                "default": "text",
+                "description": (
+                    "Text-like block type. heading_level is used for headings."
+                ),
+            },
             **_STYLE_SCHEMA_PROPERTIES,
+            **_TEXT_BLOCK_STYLE_SCHEMA_PROPERTIES,
             "parent_block_id": {
                 "type": "string",
                 "description": (
@@ -385,11 +582,19 @@ def handle_doc_append_text(args: dict, **_: Any) -> str:
         return tool_error(error)
 
     heading_level = args.get("heading_level")
+    requested_block_type = str(args.get("block_type") or "text").strip()
+    if requested_block_type not in _TEXT_BLOCK_TYPES:
+        return tool_error("block_type is unsupported")
     if heading_level is not None:
+        if requested_block_type != "text":
+            return tool_error("heading_level cannot be combined with block_type")
         if isinstance(heading_level, bool) or not isinstance(heading_level, int):
             return tool_error("heading_level must be an integer from 1 to 9")
         if not 1 <= heading_level <= 9:
             return tool_error("heading_level must be between 1 and 9")
+    style, error = _text_block_style(args, requested_block_type)
+    if error:
+        return tool_error(error)
     try:
         index = int(args.get("index", -1))
     except (TypeError, ValueError):
@@ -400,14 +605,23 @@ def handle_doc_append_text(args: dict, **_: Any) -> str:
     client, error = _client_or_error()
     if error:
         return error
-    block_type = 2 if heading_level is None else heading_level + 2
-    block_field = "text" if heading_level is None else f"heading{heading_level}"
+    block_type = (
+        _TEXT_BLOCK_TYPES[requested_block_type]
+        if heading_level is None
+        else heading_level + 2
+    )
+    block_field = (
+        requested_block_type if heading_level is None else f"heading{heading_level}"
+    )
+    block_data: dict[str, Any] = {"elements": elements}
+    if style:
+        block_data["style"] = style
     body = {
         "index": index,
         "children": [
             {
                 "block_type": block_type,
-                block_field: {"elements": elements},
+                block_field: block_data,
             }
         ],
     }

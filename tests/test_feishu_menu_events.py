@@ -133,6 +133,8 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
         "feishu_doc_append_text",
         "feishu_doc_update_text",
         "feishu_doc_share",
+        "feishu_doc_insert_blocks",
+        "feishu_doc_insert_media",
     ]
     assert {tool["toolset"] for tool in context.tools} == {"feishu_doc"}
 

@@ -26,15 +26,18 @@ The `feishu_doc` toolset must be enabled for the Feishu platform. The bot app
 must have document-read API permission, and the requested document must be
 accessible to that app. Feishu remains the authorization boundary.
 
-### Document creation, editing, and sharing
+### Document creation, rich editing, objects, and sharing
 
-Adds four tools to the existing `feishu_doc` toolset:
+Adds six tools to the existing `feishu_doc` toolset:
 
 - `feishu_doc_create` creates an app-owned docx document.
-- `feishu_doc_append_text` appends normal text or a level 1-9 heading.
+- `feishu_doc_append_text` appends a text-like block or level 1-9 heading.
 - `feishu_doc_update_text` replaces an existing text-like block's rich content.
 - `feishu_doc_share` adds a viewer, editor, or manager. If no member is given,
   it shares with the current Feishu requester using the persisted session origin.
+- `feishu_doc_insert_blocks` inserts up to 50 mixed text and structured blocks
+  in one request.
+- `feishu_doc_insert_media` creates, uploads, and binds an image or attachment.
 
 Append and update accept either `content` for a single-style run or `elements`
 for mixed formatting within one block. Supported inline styles are bold, italic,
@@ -44,6 +47,51 @@ bold: true`; mixed content can use `elements: [{"content": "Important",
 "bold": true}, {"content": " details"}]`. Updating content preserves only the
 styles supplied in that update.
 
+Inline `elements` also support formulas (`type: "equation"`, with KaTeX in
+`content`), user mentions, document mentions, and reminders. Text-like blocks
+cover normal text, headings 1-9, unordered and ordered lists, code, quote, and
+todo. The batch block tool additionally covers the public block types that
+Feishu currently allows callers to create directly: Bitable, Callout, ChatCard,
+Divider, Grid, Iframe, ISV, Sheet, Table, QuoteContainer, AddOns, Board, old/new
+Wiki sub-page lists, and message-link previews.
+Container contents can be inserted later by passing the returned cell, column,
+callout, or quote-container block ID as `parent_block_id`.
+
+Formula and mixed-object example:
+
+```json
+{
+  "document_id": "doxcn...",
+  "blocks": [
+    {"type": "heading2", "content": "Result"},
+    {
+      "type": "text",
+      "elements": [
+        {"content": "Area: ", "bold": true},
+        {"type": "equation", "content": "A=\\pi r^2"}
+      ]
+    },
+    {"type": "divider"},
+    {"type": "table", "data": {"property": {"row_size": 2, "column_size": 3}}}
+  ]
+}
+```
+
+Images accept a workspace/cache path, safe HTTP(S) URL, or base64 data URL.
+They can also set alignment and a plain-text caption. Attachments accept a
+workspace/cache path and card or preview display. Feishu's single-part media
+API has a 20 MB limit; larger files require a separate multipart workflow and
+are rejected before a document block is created. Types Feishu exposes only as
+generated/read-only blocks (such as TableCell, GridColumn, View, OKR children),
+or marks non-creatable (such as Mindnote, Diagram, Task, Agenda, and synced
+blocks), are intentionally not presented as direct-create types. OKR creation is
+also excluded because Feishu requires a `user_access_token`, while these bot
+tools deliberately operate with the connected app's `tenant_access_token`.
+Wiki sub-page lists work only inside eligible knowledge-base documents, and
+message-link previews remain subject to Feishu's rule that the caller created
+the referenced message link. Creating an empty Board needs no extra scope;
+editing its internal nodes later requires the separate Board node-write scope.
+
 Enable these least-privilege scopes in **Feishu Developer Console → Permissions
 & Scopes → Docs**, then publish a new app version:
 
@@ -51,6 +99,8 @@ Enable these least-privilege scopes in **Feishu Developer Console → Permission
   creation, block creation, block updates, and reading documents the app can
   access.
 - `docs:permission.member:create` — **Add cloud document collaborators**.
+- `docs:document.media:upload` — **Upload images and attachments to cloud
+  documents**. Required only for `feishu_doc_insert_media`.
 
 Documents created with `tenant_access_token` belong to the app and live in the
 app's cloud space. Users cannot open them until the app adds them as a
@@ -68,6 +118,7 @@ feishu-bot-enhancements/
 │   ├── __init__.py
 │   ├── document_access.py              # Normal-chat document access
 │   ├── document_tools.py               # Create, edit, and share documents
+│   ├── document_objects.py             # Blocks, formulas, images, attachments
 │   ├── plugin.py                       # Adapter composition and registration
 │   └── menu_events.py                  # Custom-menu enhancement
 ├── tests/

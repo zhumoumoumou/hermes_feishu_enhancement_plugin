@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.0
+
+- Add KaTeX equations, user/document mentions, and reminders as rich-text elements.
+- Add list, code, quote, and todo text block creation with block-level styles.
+- Add one-call insertion of up to 50 mixed text and structured document blocks.
+- Add end-to-end image and attachment insertion with safe source resolution,
+  Feishu media upload, and token binding.
+- Cover the stable public Block types that the bot's tenant token can create,
+  including Board, Wiki sub-page lists, and message-link previews, while
+  rejecting generated/read-only and user-token-only types.
+
 ## 2.3.0
 
 - Add heading levels 1-9 to document block creation.
