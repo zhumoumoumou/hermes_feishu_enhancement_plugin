@@ -2,6 +2,23 @@
 
 A profile-shareable Hermes plugin that centralizes enhancements for all of our Feishu bots without modifying Hermes Agent's bundled Feishu adapter.
 
+## Version baseline
+
+This release was developed and regression-tested against the following exact
+versions. They are the known-good baseline, not a claim that every later Hermes
+revision is automatically compatible.
+
+| Component | Version | Baseline detail |
+| --- | --- | --- |
+| Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
+| Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
+| Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
+| This enhancement plugin | `feishu-bot-enhancements 3.0.0` | `plugin.yaml` |
+
+The plugin composes the bundled Feishu adapter and imports its public runtime
+entry points instead of patching Hermes source. When upgrading Hermes or the
+bundled `feishu-platform`, run this repository's full test suite before rollout.
+
 ## Current enhancements
 
 ### Custom menu events
