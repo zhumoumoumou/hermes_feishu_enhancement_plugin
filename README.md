@@ -26,6 +26,30 @@ The `feishu_doc` toolset must be enabled for the Feishu platform. The bot app
 must have document-read API permission, and the requested document must be
 accessible to that app. Feishu remains the authorization boundary.
 
+### Document creation, editing, and sharing
+
+Adds four tools to the existing `feishu_doc` toolset:
+
+- `feishu_doc_create` creates an app-owned docx document.
+- `feishu_doc_append_text` appends a plain-text block.
+- `feishu_doc_update_text` replaces an existing text-like block's content.
+- `feishu_doc_share` adds a viewer, editor, or manager. If no member is given,
+  it shares with the current Feishu requester using the persisted session origin.
+
+Enable these least-privilege scopes in **Feishu Developer Console → Permissions
+& Scopes → Docs**, then publish a new app version:
+
+- `docx:document` — **Create and edit new documents**. This covers document
+  creation, block creation, block updates, and reading documents the app can
+  access.
+- `docs:permission.member:create` — **Add cloud document collaborators**.
+
+Documents created with `tenant_access_token` belong to the app and live in the
+app's cloud space. Users cannot open them until the app adds them as a
+collaborator. For documents created by users, the app must first be added as a
+document app/collaborator with sufficient edit or share permission. Feishu's
+document sharing settings and tenant visibility policies still apply.
+
 ## Layout
 
 ```text
@@ -35,6 +59,7 @@ feishu-bot-enhancements/
 ├── feishu_bot_enhancements/
 │   ├── __init__.py
 │   ├── document_access.py              # Normal-chat document access
+│   ├── document_tools.py               # Create, edit, and share documents
 │   ├── plugin.py                       # Adapter composition and registration
 │   └── menu_events.py                  # Custom-menu enhancement
 ├── tests/

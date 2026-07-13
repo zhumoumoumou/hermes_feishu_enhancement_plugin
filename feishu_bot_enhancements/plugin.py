@@ -8,6 +8,7 @@ from gateway.platform_registry import platform_registry
 from plugins.platforms.feishu import adapter as _bundled
 
 from . import document_access as _document_access
+from . import document_tools as _document_tools
 from . import menu_events as _menu_events
 from .menu_events import MenuEventEnhancementMixin, parse_menu_command, resolve_dm_chat_id
 
@@ -42,6 +43,7 @@ def register(ctx) -> None:
             plugin_name=ctx.manifest.name,
         )
     )
+    _document_tools.register_document_tools(ctx)
     ctx.register_hook("pre_tool_call", _document_access.inject_document_client)
     ctx.register_hook("post_tool_call", _document_access.clear_document_client)
 
@@ -53,6 +55,7 @@ __all__ = [
     "_build_adapter",
     "_bundled",
     "_document_access",
+    "_document_tools",
     "_menu_events",
     "parse_menu_command",
     "platform_registry",

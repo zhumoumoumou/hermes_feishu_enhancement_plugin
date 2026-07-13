@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.0
+
+- Add tools to create, append to, update, and share Feishu docx documents.
+- Resolve the current Feishu requester for one-step sharing of app-owned docs.
+- Document the least-privilege Feishu scopes and document-level prerequisites.
+
 ## 2.1.0
 
 - Document and pin the isolated test environment, including the Feishu SDK.

@@ -104,9 +104,13 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
 
         def __init__(self):
             self.hooks = []
+            self.tools = []
 
         def register_hook(self, name, callback):
             self.hooks.append((name, callback))
+
+        def register_tool(self, **kwargs):
+            self.tools.append(kwargs)
 
     context = FakeContext()
     plugin.register(context)
@@ -124,6 +128,13 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
         ("pre_tool_call", plugin._document_access.inject_document_client),
         ("post_tool_call", plugin._document_access.clear_document_client),
     ]
+    assert [tool["name"] for tool in context.tools] == [
+        "feishu_doc_create",
+        "feishu_doc_append_text",
+        "feishu_doc_update_text",
+        "feishu_doc_share",
+    ]
+    assert {tool["toolset"] for tool in context.tools} == {"feishu_doc"}
 
 
 @pytest.mark.parametrize(
