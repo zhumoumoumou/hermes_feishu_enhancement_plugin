@@ -213,6 +213,165 @@ def test_document_create_edit_and_share_call_official_apis():
     }
 
 
+def test_document_append_supports_heading_and_whole_run_style():
+    plugin = _load_plugin_module()
+
+    class FakeClient:
+        def __init__(self):
+            self.request_value = None
+
+        def request(self, request):
+            self.request_value = request
+            return SimpleNamespace(
+                code=0,
+                raw=SimpleNamespace(
+                    content=json.dumps({"data": {"document_revision_id": 2}})
+                ),
+            )
+
+    client = FakeClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_tools.handle_doc_append_text(
+            {
+                "document_id": "doxcn_created",
+                "content": "Summary",
+                "heading_level": 2,
+                "bold": True,
+                "text_color": 5,
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert client.request_value.body == {
+        "index": -1,
+        "children": [
+            {
+                "block_type": 4,
+                "heading2": {
+                    "elements": [
+                        {
+                            "text_run": {
+                                "content": "Summary",
+                                "text_element_style": {
+                                    "bold": True,
+                                    "text_color": 5,
+                                },
+                            }
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+
+
+def test_document_update_supports_mixed_rich_text_segments():
+    plugin = _load_plugin_module()
+
+    class FakeClient:
+        def __init__(self):
+            self.request_value = None
+
+        def request(self, request):
+            self.request_value = request
+            return SimpleNamespace(
+                code=0,
+                raw=SimpleNamespace(
+                    content=json.dumps({"data": {"document_revision_id": 3}})
+                ),
+            )
+
+    client = FakeClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_tools.handle_doc_update_text(
+            {
+                "document_id": "doxcn_created",
+                "block_id": "doxcn_block",
+                "elements": [
+                    {"content": "Important", "bold": True},
+                    {
+                        "content": " details",
+                        "italic": True,
+                        "background_color": 3,
+                        "link_url": "https://example.com/docs?a=1&b=2",
+                    },
+                ],
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert client.request_value.body == {
+        "update_text_elements": {
+            "elements": [
+                {
+                    "text_run": {
+                        "content": "Important",
+                        "text_element_style": {"bold": True},
+                    }
+                },
+                {
+                    "text_run": {
+                        "content": " details",
+                        "text_element_style": {
+                            "italic": True,
+                            "background_color": 3,
+                            "link": {
+                                "url": (
+                                    "https%3A%2F%2Fexample.com%2Fdocs%3F"
+                                    "a%3D1%26b%3D2"
+                                )
+                            },
+                        },
+                    }
+                },
+            ]
+        }
+    }
+
+
+def test_document_rich_text_validation_rejects_invalid_input():
+    plugin = _load_plugin_module()
+
+    bad_heading = json.loads(
+        plugin._document_tools.handle_doc_append_text(
+            {
+                "document_id": "doxcn_created",
+                "content": "Bad heading",
+                "heading_level": 10,
+            }
+        )
+    )
+    empty_elements = json.loads(
+        plugin._document_tools.handle_doc_update_text(
+            {
+                "document_id": "doxcn_created",
+                "block_id": "doxcn_block",
+                "elements": [],
+            }
+        )
+    )
+    bad_style = json.loads(
+        plugin._document_tools.handle_doc_update_text(
+            {
+                "document_id": "doxcn_created",
+                "block_id": "doxcn_block",
+                "content": "Bad style",
+                "bold": "yes",
+            }
+        )
+    )
+
+    assert "heading_level" in bad_heading["error"]
+    assert "elements" in empty_elements["error"]
+    assert "bold" in bad_style["error"]
+
+
 def test_document_share_defaults_to_current_feishu_requester(monkeypatch):
     plugin = _load_plugin_module()
 

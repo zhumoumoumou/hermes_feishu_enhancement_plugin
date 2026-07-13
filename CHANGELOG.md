@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.0
+
+- Add heading levels 1-9 to document block creation.
+- Add whole-block and per-segment rich-text styles to append and update tools.
+- URL-encode rich-text links before sending them to Feishu.
+
 ## 2.2.0
 
 - Add tools to create, append to, update, and share Feishu docx documents.

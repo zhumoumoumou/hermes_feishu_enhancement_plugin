@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error, tool_result
@@ -95,15 +96,138 @@ def _client_or_error() -> tuple[Any, str | None]:
     return client, None
 
 
-def _text_elements(content: str) -> list[dict[str, Any]]:
+_BOOLEAN_STYLE_FIELDS = (
+    "bold",
+    "italic",
+    "strikethrough",
+    "underline",
+    "inline_code",
+)
+
+_STYLE_SCHEMA_PROPERTIES = {
+    "bold": {"type": "boolean", "description": "Render the text in bold."},
+    "italic": {"type": "boolean", "description": "Render the text in italics."},
+    "strikethrough": {
+        "type": "boolean",
+        "description": "Render the text with strikethrough.",
+    },
+    "underline": {
+        "type": "boolean",
+        "description": "Render the text with an underline.",
+    },
+    "inline_code": {
+        "type": "boolean",
+        "description": "Render the text as inline code.",
+    },
+    "text_color": {
+        "type": "integer",
+        "enum": list(range(1, 8)),
+        "description": (
+            "Font color: 1 pink, 2 orange, 3 yellow, 4 green, 5 blue, "
+            "6 purple, 7 gray."
+        ),
+    },
+    "background_color": {
+        "type": "integer",
+        "enum": list(range(1, 15)),
+        "description": (
+            "Background color: 1-7 light pink/orange/yellow/green/blue/"
+            "purple/gray; 8-14 the corresponding dark colors."
+        ),
+    },
+    "link_url": {
+        "type": "string",
+        "description": "Optional raw URL; the tool URL-encodes it for Feishu.",
+    },
+}
+
+_RICH_TEXT_ELEMENTS_SCHEMA = {
+    "type": "array",
+    "minItems": 1,
+    "description": (
+        "Styled text segments. When supplied, this takes precedence over content "
+        "and the block-level style fields."
+    ),
+    "items": {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "description": "Segment text."},
+            **_STYLE_SCHEMA_PROPERTIES,
+        },
+        "required": ["content"],
+    },
+}
+
+
+def _text_elements(
+    content: str, style: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     return [
         {
             "text_run": {
                 "content": content,
-                "text_element_style": {},
+                "text_element_style": style or {},
             }
         }
     ]
+
+
+def _text_style(values: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    style: dict[str, Any] = {}
+    for field in _BOOLEAN_STYLE_FIELDS:
+        if field not in values:
+            continue
+        value = values[field]
+        if not isinstance(value, bool):
+            return {}, f"{field} must be a boolean"
+        style[field] = value
+
+    for field, maximum in (("text_color", 7), ("background_color", 14)):
+        if field not in values or values[field] is None:
+            continue
+        value = values[field]
+        if isinstance(value, bool) or not isinstance(value, int):
+            return {}, f"{field} must be an integer"
+        if not 1 <= value <= maximum:
+            return {}, f"{field} must be between 1 and {maximum}"
+        style[field] = value
+
+    if "link_url" in values and values["link_url"] is not None:
+        link_url = values["link_url"]
+        if not isinstance(link_url, str) or not link_url.strip():
+            return {}, "link_url must be a non-empty string"
+        style["link"] = {"url": quote(link_url.strip(), safe="")}
+
+    return style, None
+
+
+def _build_text_elements(
+    args: dict[str, Any],
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    raw_elements = args.get("elements")
+    if raw_elements is not None:
+        if not isinstance(raw_elements, list) or not raw_elements:
+            return None, "elements must be a non-empty array"
+        elements: list[dict[str, Any]] = []
+        for index, item in enumerate(raw_elements):
+            if not isinstance(item, dict):
+                return None, f"elements[{index}] must be an object"
+            content = item.get("content")
+            if not isinstance(content, str) or not content:
+                return None, f"elements[{index}].content must be non-empty text"
+            style, error = _text_style(item)
+            if error:
+                return None, f"elements[{index}].{error}"
+            elements.extend(_text_elements(content, style))
+        return elements, None
+
+    content = args.get("content")
+    if not isinstance(content, str) or not content:
+        return None, "non-empty content or elements is required"
+    style, error = _text_style(args)
+    if error:
+        return None, error
+    return _text_elements(content, style), None
 
 
 def _decode_entry(value: Any) -> dict[str, Any] | None:
@@ -210,7 +334,9 @@ def handle_doc_create(args: dict, **_: Any) -> str:
 
 FEISHU_DOC_APPEND_TEXT_SCHEMA = {
     "name": "feishu_doc_append_text",
-    "description": "Append a plain-text block to a Feishu docx document.",
+    "description": (
+        "Append a plain, styled, or heading text block to a Feishu docx document."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -218,7 +344,20 @@ FEISHU_DOC_APPEND_TEXT_SCHEMA = {
                 "type": "string",
                 "description": "The docx document_id from the URL or create result.",
             },
-            "content": {"type": "string", "description": "Text to append."},
+            "content": {
+                "type": "string",
+                "description": "Text to append in simple single-style mode.",
+            },
+            "elements": _RICH_TEXT_ELEMENTS_SCHEMA,
+            "heading_level": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9,
+                "description": (
+                    "Optional heading level from 1 to 9. Omit for normal text."
+                ),
+            },
+            **_STYLE_SCHEMA_PROPERTIES,
             "parent_block_id": {
                 "type": "string",
                 "description": (
@@ -231,17 +370,26 @@ FEISHU_DOC_APPEND_TEXT_SCHEMA = {
                 "default": -1,
             },
         },
-        "required": ["document_id", "content"],
+        "required": ["document_id"],
     },
 }
 
 
 def handle_doc_append_text(args: dict, **_: Any) -> str:
     document_id = str(args.get("document_id") or "").strip()
-    content = str(args.get("content") or "")
     parent_block_id = str(args.get("parent_block_id") or document_id).strip()
-    if not document_id or not parent_block_id or not content:
-        return tool_error("document_id and non-empty content are required")
+    if not document_id or not parent_block_id:
+        return tool_error("document_id is required")
+    elements, error = _build_text_elements(args)
+    if error:
+        return tool_error(error)
+
+    heading_level = args.get("heading_level")
+    if heading_level is not None:
+        if isinstance(heading_level, bool) or not isinstance(heading_level, int):
+            return tool_error("heading_level must be an integer from 1 to 9")
+        if not 1 <= heading_level <= 9:
+            return tool_error("heading_level must be between 1 and 9")
     try:
         index = int(args.get("index", -1))
     except (TypeError, ValueError):
@@ -252,12 +400,14 @@ def handle_doc_append_text(args: dict, **_: Any) -> str:
     client, error = _client_or_error()
     if error:
         return error
+    block_type = 2 if heading_level is None else heading_level + 2
+    block_field = "text" if heading_level is None else f"heading{heading_level}"
     body = {
         "index": index,
         "children": [
             {
-                "block_type": 2,
-                "text": {"elements": _text_elements(content)},
+                "block_type": block_type,
+                block_field: {"elements": elements},
             }
         ],
     }
@@ -276,15 +426,22 @@ def handle_doc_append_text(args: dict, **_: Any) -> str:
 
 FEISHU_DOC_UPDATE_TEXT_SCHEMA = {
     "name": "feishu_doc_update_text",
-    "description": "Replace all rich-text elements in an existing text-like block.",
+    "description": (
+        "Replace all rich-text elements in an existing text-like or heading block."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "description": "The docx document_id."},
             "block_id": {"type": "string", "description": "The text-like block ID."},
-            "content": {"type": "string", "description": "Replacement plain text."},
+            "content": {
+                "type": "string",
+                "description": "Replacement text in simple single-style mode.",
+            },
+            "elements": _RICH_TEXT_ELEMENTS_SCHEMA,
+            **_STYLE_SCHEMA_PROPERTIES,
         },
-        "required": ["document_id", "block_id", "content"],
+        "required": ["document_id", "block_id"],
     },
 }
 
@@ -292,9 +449,11 @@ FEISHU_DOC_UPDATE_TEXT_SCHEMA = {
 def handle_doc_update_text(args: dict, **_: Any) -> str:
     document_id = str(args.get("document_id") or "").strip()
     block_id = str(args.get("block_id") or "").strip()
-    content = str(args.get("content") or "")
-    if not document_id or not block_id or not content:
-        return tool_error("document_id, block_id, and non-empty content are required")
+    if not document_id or not block_id:
+        return tool_error("document_id and block_id are required")
+    elements, error = _build_text_elements(args)
+    if error:
+        return tool_error(error)
 
     client, error = _client_or_error()
     if error:
@@ -305,7 +464,7 @@ def handle_doc_update_text(args: dict, **_: Any) -> str:
         _UPDATE_BLOCK_URI,
         paths={"document_id": document_id, "block_id": block_id},
         queries=[("document_revision_id", "-1")],
-        body={"update_text_elements": {"elements": _text_elements(content)}},
+        body={"update_text_elements": {"elements": elements}},
     )
     if code != 0:
         return tool_error(f"Update document text failed: code={code} msg={msg}")

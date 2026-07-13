@@ -31,10 +31,18 @@ accessible to that app. Feishu remains the authorization boundary.
 Adds four tools to the existing `feishu_doc` toolset:
 
 - `feishu_doc_create` creates an app-owned docx document.
-- `feishu_doc_append_text` appends a plain-text block.
-- `feishu_doc_update_text` replaces an existing text-like block's content.
+- `feishu_doc_append_text` appends normal text or a level 1-9 heading.
+- `feishu_doc_update_text` replaces an existing text-like block's rich content.
 - `feishu_doc_share` adds a viewer, editor, or manager. If no member is given,
   it shares with the current Feishu requester using the persisted session origin.
+
+Append and update accept either `content` for a single-style run or `elements`
+for mixed formatting within one block. Supported inline styles are bold, italic,
+underline, strikethrough, inline code, font/background colors, and links. For
+example, a level-2 heading can use `content: "Summary", heading_level: 2,
+bold: true`; mixed content can use `elements: [{"content": "Important",
+"bold": true}, {"content": " details"}]`. Updating content preserves only the
+styles supplied in that update.
 
 Enable these least-privilege scopes in **Feishu Developer Console → Permissions
 & Scopes → Docs**, then publish a new app version:
