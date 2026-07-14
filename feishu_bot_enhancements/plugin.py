@@ -13,6 +13,7 @@ from . import document_management as _document_management
 from . import document_objects as _document_objects
 from . import document_tools as _document_tools
 from . import menu_events as _menu_events
+from . import wiki_tools as _wiki_tools
 from .menu_events import MenuEventEnhancementMixin, parse_menu_command, resolve_dm_chat_id
 from .topic_context import TopicContextEnhancementMixin
 
@@ -61,6 +62,7 @@ def register(ctx) -> None:
     _document_objects.register_document_object_tools(ctx)
     _document_management.register_document_management_tools(ctx)
     _document_domains.register_document_domain_tools(ctx)
+    _wiki_tools.register_wiki_tools(ctx)
     ctx.register_hook("pre_tool_call", _document_access.inject_document_client)
     ctx.register_hook("post_tool_call", _document_access.clear_document_client)
 
@@ -77,6 +79,7 @@ __all__ = [
     "_document_objects",
     "_document_tools",
     "_menu_events",
+    "_wiki_tools",
     "TopicContextEnhancementMixin",
     "parse_menu_command",
     "platform_registry",

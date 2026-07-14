@@ -1392,3 +1392,219 @@ def test_bitable_board_and_task_operation_matrices():
         HttpMethod.DELETE,
     ]
     assert [request.uri.rsplit("/", 1)[-1] for request in task_requests[3:]] == task_operations[3:]
+
+
+def test_wiki_link_resolution_and_docx_read():
+    plugin = _load_plugin_module()
+    client = _RecordingClient(
+        [
+            {
+                "node": {
+                    "space_id": "7001",
+                    "node_token": "wikcn1234567890",
+                    "obj_token": "doxcn1234567890",
+                    "obj_type": "docx",
+                    "title": "Wiki page",
+                }
+            },
+            {"content": "Knowledge-base body"},
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._wiki_tools.handle_feishu_wiki(
+            {
+                "action": "read_node",
+                "token": "https://tenant.feishu.cn/wiki/wikcn1234567890?from=chat",
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["content"] == "Knowledge-base body"
+    assert result["node"]["obj_token"] == "doxcn1234567890"
+    assert client.requests[0].uri.endswith("/spaces/get_node")
+    assert client.requests[0].queries == [("token", "wikcn1234567890")]
+    assert client.requests[1].paths == {"document_id": "doxcn1234567890"}
+
+
+def test_wiki_space_and_node_pagination():
+    plugin = _load_plugin_module()
+    client = _RecordingClient(
+        [
+            {"items": [{"space_id": "1"}], "has_more": True, "page_token": "p2"},
+            {"items": [{"space_id": "2"}], "has_more": False},
+            {"items": [{"node_token": "n1"}], "has_more": False},
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    spaces = json.loads(
+        plugin._wiki_tools.handle_feishu_wiki(
+            {"action": "list_spaces", "fetch_all": True, "page_size": 50}
+        )
+    )
+    nodes = json.loads(
+        plugin._wiki_tools.handle_feishu_wiki(
+            {
+                "action": "list_nodes",
+                "space_id": "7001",
+                "parent_node_token": "https://tenant.feishu.cn/wiki/wikcnparent1234",
+            }
+        )
+    )
+
+    assert [item["space_id"] for item in spaces["items"]] == ["1", "2"]
+    assert spaces["page_count"] == 2
+    assert ("page_token", "p2") in client.requests[1].queries
+    assert nodes["items"] == [{"node_token": "n1"}]
+    assert client.requests[2].paths == {"space_id": "7001"}
+    assert ("parent_node_token", "wikcnparent1234") in client.requests[2].queries
+
+
+def test_wiki_search_and_write_operation_shapes():
+    plugin = _load_plugin_module()
+    client = _RecordingClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    calls = [
+        {
+            "action": "search",
+            "query": "deployment",
+            "space_id": "7001",
+            "page_size": 25,
+        },
+        {
+            "action": "create_node",
+            "space_id": "7001",
+            "obj_type": "docx",
+            "title": "Runbook",
+            "parent_node_token": "wikcnparent1234",
+        },
+        {
+            "action": "update_title",
+            "space_id": "7001",
+            "node_token": "wikcnnode123456",
+            "title": "New title",
+        },
+        {
+            "action": "move_node",
+            "space_id": "7001",
+            "node_token": "wikcnnode123456",
+            "target_space_id": "7002",
+            "target_parent_token": "wikcntarget1234",
+        },
+        {
+            "action": "copy_node",
+            "space_id": "7001",
+            "node_token": "wikcnnode123456",
+            "target_space_id": "7002",
+            "title": "Copied title",
+        },
+    ]
+    for args in calls:
+        assert json.loads(plugin._wiki_tools.handle_feishu_wiki(args))["success"]
+
+    search, create, rename, move, copy = client.requests
+    assert search.uri == "/open-apis/search/v2/doc_wiki/search"
+    assert search.body == {
+        "query": "deployment",
+        "wiki_filter": {"space_ids": ["7001"]},
+        "page_size": 25,
+    }
+    assert create.uri.endswith("/spaces/:space_id/nodes")
+    assert create.body == {
+        "obj_type": "docx",
+        "node_type": "origin",
+        "title": "Runbook",
+        "parent_node_token": "wikcnparent1234",
+    }
+    assert rename.uri.endswith("/:node_token/update_title")
+    assert rename.body == {"title": "New title"}
+    assert move.uri.endswith("/:node_token/move")
+    assert move.body == {
+        "target_space_id": "7002",
+        "target_parent_token": "wikcntarget1234",
+    }
+    assert copy.uri.endswith("/:node_token/copy")
+    assert copy.body == {"target_space_id": "7002", "title": "Copied title"}
+
+
+def test_wiki_rejects_unsupported_or_incomplete_operations():
+    plugin = _load_plugin_module()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=_RecordingClient()))
+
+    bad_search = json.loads(
+        plugin._wiki_tools.handle_feishu_wiki({"action": "search", "query": ""})
+    )
+    bad_shortcut = json.loads(
+        plugin._wiki_tools.handle_feishu_wiki(
+            {
+                "action": "create_node",
+                "space_id": "7001",
+                "node_type": "shortcut",
+            }
+        )
+    )
+    bad_move = json.loads(
+        plugin._wiki_tools.handle_feishu_wiki(
+            {
+                "action": "move_node",
+                "space_id": "7001",
+                "node_token": "wikcnnode123456",
+            }
+        )
+    )
+
+    assert "query" in bad_search["error"]
+    assert "origin_node_token" in bad_shortcut["error"]
+    assert "target_space_id" in bad_move["error"]
+
+
+def test_wiki_moves_drive_document_and_queries_async_task():
+    plugin = _load_plugin_module()
+    client = _RecordingClient(
+        [
+            {"task_id": "task-123"},
+            {
+                "task": {
+                    "task_id": "task-123",
+                    "move_result": [{"status": 0, "status_msg": "success"}],
+                }
+            },
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    moved = json.loads(
+        plugin._wiki_tools.handle_feishu_wiki(
+            {
+                "action": "move_document",
+                "space_id": "7001",
+                "obj_token": "https://tenant.feishu.cn/docx/doxcn1234567890",
+                "parent_node_token": "https://tenant.feishu.cn/wiki/wikcnparent1234",
+                "apply": True,
+            }
+        )
+    )
+    task = json.loads(
+        plugin._wiki_tools.handle_feishu_wiki(
+            {"action": "get_task", "task_id": moved["task_id"]}
+        )
+    )
+
+    assert moved["success"] is True
+    assert task["task"]["move_result"][0]["status"] == 0
+    move_request, task_request = client.requests
+    assert move_request.uri.endswith("/nodes/move_docs_to_wiki")
+    assert move_request.paths == {"space_id": "7001"}
+    assert move_request.body == {
+        "obj_type": "docx",
+        "obj_token": "doxcn1234567890",
+        "parent_wiki_token": "wikcnparent1234",
+        "apply": True,
+    }
+    assert task_request.uri == "/open-apis/wiki/v2/tasks/:task_id"
+    assert task_request.paths == {"task_id": "task-123"}
+    assert task_request.queries == [("task_type", "move")]

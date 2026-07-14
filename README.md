@@ -13,7 +13,7 @@ revision is automatically compatible.
 | Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
 | Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
 | Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
-| This enhancement plugin | `feishu-bot-enhancements 4.1.3` | `plugin.yaml` |
+| This enhancement plugin | `feishu-bot-enhancements 4.2.1` | `plugin.yaml` |
 
 The plugin composes the bundled Feishu adapter and imports its public runtime
 entry points instead of patching Hermes source. When upgrading Hermes or the
@@ -85,7 +85,7 @@ accessible to that app. Feishu remains the authorization boundary.
 
 ### Document creation, rich editing, objects, and sharing
 
-Adds fifteen tools to the existing `feishu_doc` toolset:
+Adds sixteen tools to the existing `feishu_doc` toolset:
 
 - `feishu_doc_create` creates an app-owned docx document.
 - `feishu_doc_append_text` appends a text-like block or level 1-9 heading.
@@ -106,6 +106,38 @@ Adds fifteen tools to the existing `feishu_doc` toolset:
 - `feishu_bitable_edit` manages Bitable metadata, tables, fields, views, and records.
 - `feishu_board_edit` inspects/creates/deletes Board nodes and changes its theme.
 - `feishu_task_edit` creates and manages Task v2 tasks and their relationships.
+- `feishu_wiki` resolves Wiki links, reads docx-backed pages, lists and searches
+  knowledge spaces, and creates, renames, moves, or copies Wiki nodes.
+
+### Wiki knowledge-base access
+
+`feishu_wiki` accepts either a `/wiki/<node-token>` URL or a raw Wiki/document
+token. `get_node` resolves a Wiki node to its underlying `obj_type` and
+`obj_token`; `read_node` performs that resolution and returns plain text in one
+call when the page is backed by docx. The returned object token can be passed to
+the existing Docx, Sheet, Bitable, or other domain tools for type-specific
+content operations.
+
+Read actions are `list_spaces`, `get_space`, `get_node`, `read_node`,
+`list_nodes`, and `search`. Write actions are `create_node`, `update_title`,
+`move_node`, and `copy_node`. Lists can follow at most 20 pages automatically;
+search uses Feishu's application-capable document/Wiki search API and can be
+limited to one `space_id`.
+
+`move_document` migrates an existing Drive document into a knowledge space,
+optionally below `parent_node_token`. It accepts doc/docx, Sheet, Bitable, and
+Mindnote URLs or tokens. The operation is asynchronous when Feishu returns a
+`task_id`; pass that ID to `get_task` until the move result is no longer
+processing. `apply: true` asks the document owner for migration approval when
+the bot cannot move it directly; it does not bypass document permissions.
+
+All calls use the bot application's `tenant_access_token`. The application must
+be granted access to the concrete knowledge space or added as a knowledge-space
+member; API scopes alone do not grant resource access. Feishu's published Wiki
+v2 API has no node-delete endpoint, so the plugin does not disguise deletion of
+an underlying Drive document as Wiki-node deletion. Creating an entirely new
+knowledge space and the older `/wiki/v2/nodes/search` endpoint require a user
+token and are intentionally not exposed by this tenant-token tool.
 
 Append and update accept either `content` for a single-style run or `elements`
 for mixed formatting within one block. Supported inline styles are bold, italic,
@@ -263,6 +295,13 @@ intend to use:
   theme, and delete nodes respectively.
 - `task:task:write` — create and manage Task v2 tasks. With a tenant token, the
   app can operate only on tasks for which it is a member or otherwise authorized.
+- `wiki:space:retrieve`, `wiki:space:read`, `wiki:node:retrieve`, and
+  `wiki:node:read` — list knowledge spaces/nodes and resolve Wiki links.
+- `wiki:node:create`, `wiki:node:update`, `wiki:node:move`, and
+  `wiki:node:copy` — create, rename, move, and copy Wiki nodes. The broader
+  `wiki:wiki` scope may be used instead when all Wiki management is intended.
+- `search:docs:read` — search Wiki/document metadata with the application-capable
+  document search endpoint.
 
 ### 一键导入飞书权限
 
@@ -298,6 +337,7 @@ feishu-bot-enhancements/
 │   ├── document_objects.py             # Blocks, formulas, images, attachments
 │   ├── document_management.py          # Block inspection, comments, lifecycle
 │   ├── document_domains.py             # Sheet, Bitable, Board, and Task APIs
+│   ├── wiki_tools.py                    # Wiki resolution, browsing, and nodes
 │   ├── plugin.py                       # Adapter composition and registration
 │   └── menu_events.py                  # Custom-menu enhancement
 ├── tests/

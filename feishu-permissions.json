@@ -163,6 +163,7 @@
       "im:resource",
       "mindnote:node:create",
       "mindnote:node:read",
+      "search:docs:read",
       "sheets:spreadsheet",
       "sheets:spreadsheet.meta:read",
       "sheets:spreadsheet.meta:write_only",

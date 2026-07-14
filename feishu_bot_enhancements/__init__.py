@@ -35,6 +35,7 @@ from .document_domains import (
     register_document_domain_tools,
 )
 from .menu_events import MenuEventEnhancementMixin, parse_menu_command, resolve_dm_chat_id
+from .wiki_tools import handle_feishu_wiki, register_wiki_tools
 from .topic_context import TopicContextEnhancementMixin
 from .plugin import EnhancedFeishuAdapter, register
 
@@ -60,6 +61,7 @@ __all__ = [
     "handle_doc_update_text",
     "handle_sheet_edit",
     "handle_task_edit",
+    "handle_feishu_wiki",
     "inject_document_client",
     "parse_menu_command",
     "register",
@@ -67,6 +69,7 @@ __all__ = [
     "register_document_object_tools",
     "register_document_domain_tools",
     "register_document_management_tools",
+    "register_wiki_tools",
     "resolve_session_open_id",
     "resolve_dm_chat_id",
 ]

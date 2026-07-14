@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.2.1
+
+- Add existing Drive-document migration into Wiki spaces, including optional
+  owner approval requests and asynchronous task-result lookup.
+
+## 4.2.0
+
+- Add `feishu_wiki` for Wiki URL/token resolution, docx-backed page reading,
+  space and node browsing, application-visible search, and node create/rename/
+  move/copy operations.
+- Add the `search:docs:read` scope to the bulk permission template and document
+  the tenant-token resource-access and Wiki node-deletion boundaries.
+
 ## 4.1.3
 
 - Add optional provider-aware Feishu menu model keys while retaining legacy

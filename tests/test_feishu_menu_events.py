@@ -144,6 +144,7 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
         "feishu_bitable_edit",
         "feishu_board_edit",
         "feishu_task_edit",
+        "feishu_wiki",
     ]
     assert {tool["toolset"] for tool in context.tools} == {"feishu_doc"}
 
