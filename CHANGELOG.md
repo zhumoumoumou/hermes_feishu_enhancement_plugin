@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.5.0
+
+- Add `feishu_doc_embed_diagram` to create a native Board Block directly inside
+  a docx document, render PlantUML, Mermaid, or SVG, and verify created nodes.
+- Support UML class, sequence, component, and state diagrams alongside ER,
+  activity, flowchart, and mind-map parsing hints.
+- Add `feishu_board_edit render_syntax` for updating existing embedded Boards,
+  plus overwrite and idempotency options for raw node creation.
+- Preserve a successfully created Board as a recoverable partial result when
+  syntax rendering or verification fails, preventing duplicate embedded Boards.
+- Extend the document-authoring Skill with direct-embedding, update, recovery,
+  and verification guidance for UML and other diagrams.
+
 ## 4.4.0
 
 - Add `feishu_doc_embed_bitable` with optional declarative setup for fields,

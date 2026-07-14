@@ -1,4 +1,4 @@
 interface:
   display_name: "Feishu Document Authoring"
-  short_description: "Create and sync rich Feishu docs and embedded Bitable views"
-  default_prompt: "Use $document-authoring to create or safely update a Feishu document and its embedded Bitable views."
+  short_description: "Create rich Feishu docs with embedded Bitable and UML Boards"
+  default_prompt: "Use $document-authoring to create or safely update a Feishu document, including directly embedded UML/diagram Boards and embedded Bitable views."

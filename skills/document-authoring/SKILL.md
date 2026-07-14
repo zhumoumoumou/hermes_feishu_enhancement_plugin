@@ -1,12 +1,55 @@
 ---
 name: document-authoring
-description: Create, edit, inspect, and verify Feishu documents with rich text, structured blocks, media, and embedded Bitable data table, kanban, gallery, gantt, or form views. Use for new embedded Bitable creation, safe updates to an existing embedded Base, idempotent record synchronization, or recovery from a partial Feishu document write.
+description: Create, edit, inspect, and verify Feishu documents with rich text, structured blocks, media, embedded Bitable views, and directly embedded UML or diagram Boards. Use for new embedded Bitable creation, safe updates to an existing embedded Base, PlantUML/Mermaid/SVG rendering, idempotent synchronization, or recovery from a partial Feishu document write.
 ---
 
 # Feishu Document Authoring
 
 Use dedicated `feishu_doc` tools for complex objects. Do not assemble raw
 Bitable Blocks when `feishu_doc_embed_bitable` can create and resolve them.
+
+## Embed UML and diagrams directly
+
+For UML, ER, flowcharts, activity diagrams, and mind maps, call
+`feishu_doc_embed_diagram`. It creates a native Feishu Board Block inside the
+document and then renders the supplied source into that Board. The result is
+directly visible and editable in the document; do not substitute a bare Board
+link, image, iframe, or code block.
+
+Choose the source format deliberately:
+
+- Prefer Mermaid for concise flowcharts, class diagrams, sequence diagrams,
+  state diagrams, ER diagrams, and mind maps.
+- Prefer PlantUML when its UML notation expresses the requested diagram more
+  clearly, especially detailed class, component, activity, or sequence models.
+- Use SVG for custom visual layouts that UML syntax cannot express. SVG is
+  embedded in the same native Board, not uploaded as a document image.
+
+Example of a directly embedded class diagram:
+
+```json
+{
+  "document_id": "<docx id>",
+  "syntax_type": "mermaid",
+  "diagram_type": "class",
+  "source": "classDiagram\nclass User {\n  +String name\n  +login()\n}\nclass Session\nUser \"1\" --> \"*\" Session"
+}
+```
+
+For an existing Board, use `feishu_board_edit` with
+`operation="render_syntax"`. Set `data.overwrite=true` only when the requested
+change replaces the whole diagram; otherwise new diagram content is added.
+Supply a stable 10-64 character `client_token` when retrying the same render.
+
+Treat a `partial` embed result as a successful Block creation with unfinished
+rendering. Keep its `block_id` and `whiteboard_id`, repair the syntax, and call
+`feishu_board_edit render_syntax`; never call `feishu_doc_embed_diagram` again
+for the same intended diagram. Finish by calling `get_nodes` and require a
+non-empty node list.
+
+Do not try to create Docx block type 21 directly. Although Feishu defines a
+Diagram/UML Block structurally, Docx OpenAPI does not support creating, reading,
+or editing it. The embedded Board workflow is the supported API route.
 
 ## Choose the Bitable workflow
 

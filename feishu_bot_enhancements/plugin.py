@@ -73,7 +73,7 @@ def register(ctx) -> None:
         _PLUGIN_ROOT / "skills" / "document-authoring" / "SKILL.md",
         (
             "Create and safely update Feishu documents, including idempotent "
-            "embedded Bitable grid, kanban, gallery, gantt, and form workflows."
+            "embedded Bitable views and directly embedded UML/diagram Boards."
         ),
     )
     _document_tools.register_document_tools(ctx)

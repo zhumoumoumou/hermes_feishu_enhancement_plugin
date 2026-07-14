@@ -1655,6 +1655,124 @@ def test_embed_bitable_can_create_and_populate_grid_in_one_call():
     assert sum(request.uri.endswith("/children") for request in client.requests) == 1
 
 
+def test_embed_diagram_creates_native_board_renders_and_verifies_nodes():
+    plugin = _load_plugin_module()
+    client = _RecordingClient(
+        [
+            {
+                "document_revision_id": 15,
+                "children": [
+                    {
+                        "block_id": "blk_board",
+                        "block_type": 43,
+                        "board": {"token": "board_embedded_token"},
+                    }
+                ],
+            },
+            {"node_id": "node_root"},
+            {"nodes": [{"id": "node_root", "type": "group"}]},
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_domains.handle_doc_embed_diagram(
+            {
+                "document_id": "doxcn_doc",
+                "source": "classDiagram\nclass User",
+                "syntax_type": "mermaid",
+                "diagram_type": "class",
+                "client_token": "diagram-test-token",
+            }
+        )
+    )
+
+    assert result == {
+        "success": True,
+        "status": "complete",
+        "document_id": "doxcn_doc",
+        "block_id": "blk_board",
+        "whiteboard_id": "board_embedded_token",
+        "syntax_type": "mermaid",
+        "diagram_type": "class",
+        "document_revision_id": 15,
+        "created_node_id": "node_root",
+        "verified_node_count": 1,
+    }
+    create, render, verify = client.requests
+    assert create.uri.endswith("/children")
+    assert create.body == {
+        "index": -1,
+        "children": [
+            {
+                "block_type": 43,
+                "board": {"align": 2, "width": 800, "height": 450},
+            }
+        ],
+    }
+    assert render.uri.endswith("/nodes/plantuml")
+    assert render.paths == {"whiteboard_id": "board_embedded_token"}
+    assert render.queries == [("client_token", "diagram-test-token")]
+    assert render.body == {
+        "plant_uml_code": "classDiagram\nclass User",
+        "syntax_type": 2,
+        "diagram_type": 4,
+        "parse_mode": 1,
+        "overwrite": False,
+    }
+    assert verify.http_method == HttpMethod.GET
+    assert verify.uri.endswith("/nodes")
+
+
+def test_embed_diagram_preserves_created_board_when_render_fails():
+    plugin = _load_plugin_module()
+
+    class RenderFailureClient:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, request):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                code, msg, data = 0, "success", {
+                    "children": [
+                        {
+                            "block_id": "blk_partial_board",
+                            "board": {"token": "board_partial_token"},
+                        }
+                    ]
+                }
+            else:
+                code, msg, data = 2890002, "invalid diagram syntax", {}
+            return SimpleNamespace(
+                code=code,
+                msg=msg,
+                raw=SimpleNamespace(
+                    content=json.dumps({"code": code, "msg": msg, "data": data})
+                ),
+            )
+
+    client = RenderFailureClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+    result = json.loads(
+        plugin._document_domains.handle_doc_embed_diagram(
+            {
+                "document_id": "doxcn_doc",
+                "source": "@startuml\ninvalid\n@enduml",
+                "syntax_type": "plantuml",
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "partial"
+    assert result["block_id"] == "blk_partial_board"
+    assert result["whiteboard_id"] == "board_partial_token"
+    assert "feishu_board_edit operation=render_syntax" in result["render_error"]
+    assert "Do not create another Board" in result["render_error"]
+    assert len(client.requests) == 2
+
+
 def test_bitable_read_operations_resolve_metadata_ids():
     plugin = _load_plugin_module()
     client = _RecordingClient()
@@ -2007,7 +2125,24 @@ def test_bitable_board_and_task_operation_matrices():
     for operation, data in [
         ("get_nodes", {}),
         ("get_theme", {}),
-        ("create_nodes", {"nodes": [{"type": "text", "x": 0, "y": 0}]}),
+        (
+            "create_nodes",
+            {
+                "nodes": [{"type": "text", "x": 0, "y": 0}],
+                "overwrite": True,
+                "client_token": "raw-node-token",
+            },
+        ),
+        (
+            "render_syntax",
+            {
+                "source": "@startuml\nA -> B\n@enduml",
+                "syntax_type": "plantuml",
+                "diagram_type": "sequence",
+                "overwrite": True,
+                "client_token": "render-node-token",
+            },
+        ),
         ("delete_nodes", {"ids": ["node"]}),
         ("update_theme", {"theme": "classic"}),
     ]:
@@ -2022,9 +2157,15 @@ def test_bitable_board_and_task_operation_matrices():
         HttpMethod.GET,
         HttpMethod.GET,
         HttpMethod.POST,
+        HttpMethod.POST,
         HttpMethod.DELETE,
         HttpMethod.POST,
     ]
+    assert board_requests[2].body["overwrite"] is True
+    assert board_requests[2].queries == [("client_token", "raw-node-token")]
+    assert board_requests[3].uri.endswith("/nodes/plantuml")
+    assert board_requests[3].body["syntax_type"] == 1
+    assert board_requests[3].body["diagram_type"] == 2
 
     task_start = len(client.requests)
     task_operations = [

@@ -163,14 +163,85 @@ FEISHU_DOC_EMBED_BITABLE_SCHEMA = {
 }
 
 
+_BOARD_SYNTAX_TYPES = {"plantuml": 1, "mermaid": 2, "svg": 3}
+_BOARD_DIAGRAM_TYPES = {
+    "auto": 0,
+    "mindmap": 1,
+    "sequence": 2,
+    "activity": 3,
+    "class": 4,
+    "er": 5,
+    "flowchart": 6,
+    "state": 7,
+    "component": 8,
+}
+
+
+FEISHU_DOC_EMBED_DIAGRAM_SCHEMA = {
+    "name": "feishu_doc_embed_diagram",
+    "description": (
+        "Create a native Feishu Board directly embedded in a docx document, "
+        "render PlantUML, Mermaid, or SVG into it, and verify that Board nodes "
+        "exist. Use this for directly embedded UML class/sequence/component/state "
+        "diagrams, ER diagrams, flowcharts, activity diagrams, and mind maps. "
+        "Feishu's native Diagram Block is not writable through OpenAPI; this tool "
+        "uses the supported embedded Board Block instead. If status=partial, "
+        "continue with feishu_board_edit and do not create another Board."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "document_id": {"type": "string"},
+            "parent_block_id": {
+                "type": "string",
+                "description": "Defaults to the document root block.",
+            },
+            "index": {
+                "type": "integer",
+                "default": -1,
+                "description": "Insertion index; -1 appends.",
+            },
+            "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100000,
+                "description": "PlantUML, Mermaid, or self-contained SVG source.",
+            },
+            "syntax_type": {
+                "type": "string",
+                "enum": list(_BOARD_SYNTAX_TYPES),
+                "default": "mermaid",
+            },
+            "diagram_type": {
+                "type": "string",
+                "enum": list(_BOARD_DIAGRAM_TYPES),
+                "default": "auto",
+                "description": "A parsing hint; auto is normally sufficient.",
+            },
+            "align": {"type": "integer", "enum": [1, 2, 3], "default": 2},
+            "width": {"type": "integer", "minimum": 90, "default": 800},
+            "height": {"type": "integer", "minimum": 90, "default": 450},
+            "client_token": {
+                "type": "string",
+                "minLength": 10,
+                "maxLength": 64,
+                "description": "Optional idempotency token for syntax rendering.",
+            },
+        },
+        "required": ["document_id", "source"],
+    },
+}
+
+
 FEISHU_BOARD_EDIT_SCHEMA = {
     "name": "feishu_board_edit",
     "description": (
-        "Inspect Board nodes/theme, create up to 3000 nodes, recursively delete "
-        "up to 100 node IDs, or update the Board theme. Feishu currently "
-        "publishes no API for "
-        "updating existing node properties in place. data uses {nodes:[...]}, "
-        "{ids:[...]}, or {theme:classic|minimalist_gray|retro|vibrant_color|default}."
+        "Inspect Board nodes/theme, create up to 3000 raw nodes, render "
+        "PlantUML/Mermaid/SVG, recursively delete up to 100 node IDs, or update "
+        "the Board theme. render_syntax data uses {source,syntax_type,diagram_type,"
+        "overwrite?,client_token?}; create_nodes accepts {nodes,overwrite?,"
+        "client_token?}. Feishu currently publishes no API for updating existing "
+        "node properties in place."
     ),
     "parameters": {
         "type": "object",
@@ -182,6 +253,7 @@ FEISHU_BOARD_EDIT_SCHEMA = {
                     "get_nodes",
                     "get_theme",
                     "create_nodes",
+                    "render_syntax",
                     "delete_nodes",
                     "update_theme",
                 ],
@@ -430,6 +502,75 @@ def _created_bitable_identity(data: dict[str, Any]) -> tuple[str, str]:
     return str(child.get("block_id") or ""), str(bitable.get("token") or "")
 
 
+def _created_board_identity(data: dict[str, Any]) -> tuple[str, str]:
+    children = data.get("children")
+    if (
+        not isinstance(children, list)
+        or not children
+        or not isinstance(children[0], dict)
+    ):
+        return "", ""
+    child = children[0]
+    board = child.get("board")
+    if not isinstance(board, dict):
+        return str(child.get("block_id") or ""), ""
+    whiteboard_id = board.get("token") or board.get("whiteboard_id")
+    return str(child.get("block_id") or ""), str(whiteboard_id or "")
+
+
+def _board_client_token(data: dict[str, Any]) -> tuple[str, str | None]:
+    raw = data.get("client_token")
+    if raw is None or raw == "":
+        return "", None
+    if not isinstance(raw, str) or not 10 <= len(raw) <= 64:
+        return "", "client_token must contain 10-64 characters"
+    if any(ord(character) < 32 for character in raw):
+        return "", "client_token must not contain control characters"
+    return raw, None
+
+
+def _board_syntax_request(
+    data: dict[str, Any], *, default_overwrite: bool = False
+) -> tuple[dict[str, Any] | None, list[tuple[str, str]], str | None]:
+    source = data.get("source")
+    if not isinstance(source, str) or not source.strip():
+        return None, [], "source must be a non-empty string"
+    if len(source) > 100000:
+        return None, [], "source must not exceed 100000 characters"
+    syntax_type = str(data.get("syntax_type") or "mermaid").strip().lower()
+    if syntax_type not in _BOARD_SYNTAX_TYPES:
+        return None, [], "syntax_type must be plantuml, mermaid, or svg"
+    diagram_type = str(data.get("diagram_type") or "auto").strip().lower()
+    if diagram_type not in _BOARD_DIAGRAM_TYPES:
+        return (
+            None,
+            [],
+            "diagram_type must be auto, mindmap, sequence, activity, class, er, "
+            "flowchart, state, or component",
+        )
+    overwrite = data.get("overwrite", default_overwrite)
+    if not isinstance(overwrite, bool):
+        return None, [], "overwrite must be a boolean"
+    parse_mode = data.get("parse_mode", 1)
+    if isinstance(parse_mode, bool) or parse_mode not in {0, 1}:
+        return None, [], "parse_mode must be 0 or 1"
+    client_token, error = _board_client_token(data)
+    if error:
+        return None, [], error
+    queries = [("client_token", client_token)] if client_token else []
+    return (
+        {
+            "plant_uml_code": source,
+            "syntax_type": _BOARD_SYNTAX_TYPES[syntax_type],
+            "diagram_type": _BOARD_DIAGRAM_TYPES[diagram_type],
+            "parse_mode": parse_mode,
+            "overwrite": overwrite,
+        },
+        queries,
+        None,
+    )
+
+
 def _lookup_first_bitable_table(
     client: Any, app_token: str
 ) -> tuple[str, dict[str, Any], str | None]:
@@ -615,6 +756,123 @@ def handle_doc_embed_bitable(args: dict, **_: Any) -> str:
     return tool_result(**base_result)
 
 
+def handle_doc_embed_diagram(args: dict, **_: Any) -> str:
+    document_id = str(args.get("document_id") or "").strip()
+    parent_block_id = str(args.get("parent_block_id") or document_id).strip()
+    if not document_id or not parent_block_id:
+        return tool_error("document_id is required")
+    index, error = _document_index(args.get("index", -1))
+    if error:
+        return tool_error(error)
+    align = args.get("align", 2)
+    width = args.get("width", 800)
+    height = args.get("height", 450)
+    if isinstance(align, bool) or align not in {1, 2, 3}:
+        return tool_error("align must be 1, 2, or 3")
+    for field, value in (("width", width), ("height", height)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 90:
+            return tool_error(f"{field} must be an integer of at least 90")
+    syntax_data = {
+        "source": args.get("source"),
+        "syntax_type": args.get("syntax_type", "mermaid"),
+        "diagram_type": args.get("diagram_type", "auto"),
+        "parse_mode": 1,
+        "overwrite": False,
+        "client_token": args.get("client_token"),
+    }
+    render_body, render_queries, error = _board_syntax_request(syntax_data)
+    if error:
+        return tool_error(error)
+
+    client, error = _client_or_error()
+    if error:
+        return error
+    code, msg, create_data = _request(
+        client,
+        "POST",
+        _CREATE_CHILDREN_URI,
+        paths={"document_id": document_id, "block_id": parent_block_id},
+        queries=[("document_revision_id", "-1")],
+        body={
+            "index": index,
+            "children": [
+                {
+                    "block_type": 43,
+                    "board": {"align": align, "width": width, "height": height},
+                }
+            ],
+        },
+    )
+    if code != 0:
+        return tool_error(f"Create embedded Board failed: code={code} msg={msg}")
+
+    block_id, whiteboard_id = _created_board_identity(create_data)
+    result: dict[str, Any] = {
+        "success": True,
+        "status": "complete",
+        "document_id": document_id,
+        "block_id": block_id,
+        "whiteboard_id": whiteboard_id,
+        "syntax_type": str(args.get("syntax_type") or "mermaid").lower(),
+        "diagram_type": str(args.get("diagram_type") or "auto").lower(),
+    }
+    if "document_revision_id" in create_data:
+        result["document_revision_id"] = create_data["document_revision_id"]
+    if not whiteboard_id:
+        result.update(
+            status="partial",
+            render_error=(
+                "The embedded Board was created but Feishu did not return its "
+                "whiteboard_id. Inspect the Board Block before continuing; do not "
+                "create another Board."
+            ),
+        )
+        return tool_result(**result)
+
+    board_paths = {"whiteboard_id": whiteboard_id}
+    board_base = "/open-apis/board/v1/whiteboards/:whiteboard_id"
+    code, msg, render_data = _request(
+        client,
+        "POST",
+        f"{board_base}/nodes/plantuml",
+        paths=board_paths,
+        queries=render_queries,
+        body=render_body,
+    )
+    if code != 0:
+        result.update(
+            status="partial",
+            render_error=(
+                f"Render diagram failed: code={code} msg={msg}. The embedded Board "
+                "already exists; retry with feishu_board_edit operation=render_syntax "
+                "and the returned whiteboard_id. Do not create another Board."
+            ),
+        )
+        return tool_result(**result)
+    if render_data.get("node_id"):
+        result["created_node_id"] = render_data["node_id"]
+
+    code, msg, verify_data = _request(
+        client,
+        "GET",
+        f"{board_base}/nodes",
+        paths=board_paths,
+    )
+    nodes = verify_data.get("nodes")
+    if code != 0 or not isinstance(nodes, list) or not nodes:
+        result.update(
+            status="partial",
+            verification_error=(
+                f"Diagram render returned success but node verification failed: "
+                f"code={code} msg={msg}. Re-read with feishu_board_edit get_nodes "
+                "before retrying; do not create another Board."
+            ),
+        )
+        return tool_result(**result)
+    result["verified_node_count"] = len(nodes)
+    return tool_result(**result)
+
+
 def handle_bitable_edit(args: dict, **_: Any) -> str:
     app_token = str(args.get("app_token") or "").strip()
     operation = str(args.get("operation") or "").strip()
@@ -741,6 +999,7 @@ def handle_board_edit(args: dict, **_: Any) -> str:
         "get_nodes",
         "get_theme",
         "create_nodes",
+        "render_syntax",
         "delete_nodes",
         "update_theme",
     }:
@@ -749,6 +1008,7 @@ def handle_board_edit(args: dict, **_: Any) -> str:
         return tool_error(error)
     paths = {"whiteboard_id": whiteboard_id}
     base = "/open-apis/board/v1/whiteboards/:whiteboard_id"
+    queries: list[tuple[str, str]] = []
     if operation == "get_nodes":
         method, uri, body = "GET", f"{base}/nodes", None
     elif operation == "get_theme":
@@ -757,7 +1017,24 @@ def handle_board_edit(args: dict, **_: Any) -> str:
         nodes = data.get("nodes")
         if not isinstance(nodes, list) or not 1 <= len(nodes) <= 3000:
             return tool_error("data.nodes must contain 1-3000 nodes")
-        method, uri, body = "POST", f"{base}/nodes", {"nodes": nodes}
+        overwrite = data.get("overwrite", False)
+        if not isinstance(overwrite, bool):
+            return tool_error("data.overwrite must be a boolean")
+        client_token, error = _board_client_token(data)
+        if error:
+            return tool_error(f"data.{error}")
+        if client_token:
+            queries.append(("client_token", client_token))
+        method, uri, body = (
+            "POST",
+            f"{base}/nodes",
+            {"nodes": nodes, "overwrite": overwrite},
+        )
+    elif operation == "render_syntax":
+        body, queries, error = _board_syntax_request(data)
+        if error:
+            return tool_error(f"data.{error}")
+        method, uri = "POST", f"{base}/nodes/plantuml"
     elif operation == "delete_nodes":
         ids = data.get("ids")
         if not isinstance(ids, list) or not 1 <= len(ids) <= 100 or any(
@@ -773,7 +1050,9 @@ def handle_board_edit(args: dict, **_: Any) -> str:
     client, error = _client_or_error()
     if error:
         return error
-    code, msg, response = _request(client, method, uri, paths=paths, body=body)
+    code, msg, response = _request(
+        client, method, uri, paths=paths, queries=queries, body=body
+    )
     if code != 0:
         return tool_error(f"Board {operation} failed: code={code} msg={msg}")
     return tool_result(success=True, operation=operation, **response)
@@ -821,6 +1100,7 @@ def register_document_domain_tools(ctx: Any) -> None:
         ("feishu_sheet_edit", FEISHU_SHEET_EDIT_SCHEMA, handle_sheet_edit, "Edit Sheet cells, styles, rows, columns, and tabs", "📊"),
         ("feishu_doc_resolve_bitable", FEISHU_DOC_RESOLVE_BITABLE_SCHEMA, handle_doc_resolve_bitable, "Resolve the unique Bitable embedded in a document", "🔎"),
         ("feishu_doc_embed_bitable", FEISHU_DOC_EMBED_BITABLE_SCHEMA, handle_doc_embed_bitable, "Create and safely configure an embedded Bitable", "🧩"),
+        ("feishu_doc_embed_diagram", FEISHU_DOC_EMBED_DIAGRAM_SCHEMA, handle_doc_embed_diagram, "Create and render a directly embedded UML or diagram Board", "🗺️"),
         ("feishu_bitable_sync", FEISHU_BITABLE_SYNC_SCHEMA, handle_bitable_sync, "Declaratively configure and idempotently sync a Bitable", "🔄"),
         ("feishu_bitable_edit", FEISHU_BITABLE_EDIT_SCHEMA, handle_bitable_edit, "Inspect and edit Bitable tables, fields, views, and records", "🗃️"),
         ("feishu_board_edit", FEISHU_BOARD_EDIT_SCHEMA, handle_board_edit, "Inspect/create/delete Board nodes and update its theme", "🎨"),
@@ -843,6 +1123,7 @@ __all__ = [
     "handle_bitable_sync",
     "handle_doc_resolve_bitable",
     "handle_doc_embed_bitable",
+    "handle_doc_embed_diagram",
     "handle_bitable_edit",
     "handle_board_edit",
     "handle_sheet_edit",

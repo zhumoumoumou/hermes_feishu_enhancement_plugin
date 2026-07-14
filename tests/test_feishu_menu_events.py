@@ -137,7 +137,7 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
                 / "SKILL.md",
                 (
                     "Create and safely update Feishu documents, including idempotent "
-                    "embedded Bitable grid, kanban, gallery, gantt, and form workflows."
+                    "embedded Bitable views and directly embedded UML/diagram Boards."
                 ),
         )
     ]
@@ -160,6 +160,7 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
             "feishu_sheet_edit",
             "feishu_doc_resolve_bitable",
             "feishu_doc_embed_bitable",
+            "feishu_doc_embed_diagram",
             "feishu_bitable_sync",
             "feishu_bitable_edit",
         "feishu_board_edit",

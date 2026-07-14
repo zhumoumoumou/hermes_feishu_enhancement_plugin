@@ -13,7 +13,7 @@ revision is automatically compatible.
 | Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
 | Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
 | Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
-| This enhancement plugin | `feishu-bot-enhancements 4.4.0` | `plugin.yaml` |
+| This enhancement plugin | `feishu-bot-enhancements 4.5.0` | `plugin.yaml` |
 
 The plugin composes the bundled Feishu adapter and imports its public runtime
 entry points instead of patching Hermes source. When upgrading Hermes or the
@@ -110,11 +110,16 @@ Adds nineteen tools to the existing `feishu_doc` toolset:
   document and returns its Block, app, table, and raw-token identifiers.
 - `feishu_doc_embed_bitable` creates a new Bitable inside a document and can
   configure its fields, records, and views in a safe order.
+- `feishu_doc_embed_diagram` creates a native Board directly inside a document,
+  renders PlantUML, Mermaid, or SVG into it, and verifies the resulting nodes.
+  Use it for UML class/sequence/component/state diagrams, ER diagrams,
+  flowcharts, activity diagrams, and mind maps without exposing a bare link.
 - `feishu_bitable_sync` declaratively ensures fields/views and idempotently
   upserts records by a caller-selected unique key.
 - `feishu_bitable_edit` inspects and manages Bitable metadata, tables, fields,
   views, and records.
-- `feishu_board_edit` inspects/creates/deletes Board nodes and changes its theme.
+- `feishu_board_edit` inspects/creates/deletes Board nodes, renders or replaces
+  PlantUML/Mermaid/SVG content, and changes the Board theme.
 - `feishu_task_edit` creates and manages Task v2 tasks and their relationships.
 - `feishu_wiki` resolves Wiki links, reads docx-backed pages, lists and searches
   knowledge spaces, and creates, renames, moves, or copies Wiki nodes.
@@ -123,10 +128,11 @@ Adds nineteen tools to the existing `feishu_doc` toolset:
 
 The plugin registers the opt-in skill
 `feishu-bot-enhancements:document-authoring`. Load it for multi-step document
-composition, especially embedded Bitable creation and updates. It explains the
-distinction between a Bitable kanban and a whiteboard, safe partial-result
-recovery, canonical Block preservation, idempotent record synchronization, and
-the field/record/view ordering an Agent must follow.
+composition, especially embedded Bitable creation and updates or directly
+embedded UML and diagrams. It explains the distinction between a Bitable
+kanban and a whiteboard, safe partial-result recovery, canonical Block
+preservation, idempotent record synchronization, and the ordering an Agent
+must follow.
 
 For a new embedded Bitable, prefer `feishu_doc_embed_bitable` over a raw
 `bitable` Block. Supply `setup` to create fields and records before advanced
@@ -347,7 +353,7 @@ intend to use:
 - `bitable:app` — edit Bitable apps, tables, fields, views, and records.
 - `board:whiteboard:node:read`, `board:whiteboard:node:create`, and
   `board:whiteboard:node:delete` — inspect nodes/theme, create nodes/change the
-  theme, and delete nodes respectively.
+  theme, parse PlantUML/Mermaid/SVG syntax, and delete nodes respectively.
 - `task:task:write` — create and manage Task v2 tasks. With a tenant token, the
   app can operate only on tasks for which it is a member or otherwise authorized.
 - `wiki:space:retrieve`, `wiki:space:read`, `wiki:node:retrieve`, and
