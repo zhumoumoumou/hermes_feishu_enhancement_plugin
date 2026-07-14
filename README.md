@@ -13,7 +13,7 @@ revision is automatically compatible.
 | Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
 | Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
 | Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
-| This enhancement plugin | `feishu-bot-enhancements 4.3.1` | `plugin.yaml` |
+| This enhancement plugin | `feishu-bot-enhancements 4.4.0` | `plugin.yaml` |
 
 The plugin composes the bundled Feishu adapter and imports its public runtime
 entry points instead of patching Hermes source. When upgrading Hermes or the
@@ -85,7 +85,7 @@ accessible to that app. Feishu remains the authorization boundary.
 
 ### Document creation, rich editing, objects, and sharing
 
-Adds sixteen tools to the existing `feishu_doc` toolset:
+Adds nineteen tools to the existing `feishu_doc` toolset:
 
 - `feishu_doc_create` creates an app-owned docx document.
 - `feishu_doc_append_text` appends a text-like block or level 1-9 heading.
@@ -106,11 +106,38 @@ Adds sixteen tools to the existing `feishu_doc` toolset:
 - `feishu_doc_comments` lists and manages full-document comments and replies.
 - `feishu_doc_manage` renames, copies, moves, or deletes a document.
 - `feishu_sheet_edit` edits Sheet cells, styles, dimensions, and worksheets.
-- `feishu_bitable_edit` manages Bitable metadata, tables, fields, views, and records.
+- `feishu_doc_resolve_bitable` locates the unique Bitable embedded in a
+  document and returns its Block, app, table, and raw-token identifiers.
+- `feishu_doc_embed_bitable` creates a new Bitable inside a document and can
+  configure its fields, records, and views in a safe order.
+- `feishu_bitable_sync` declaratively ensures fields/views and idempotently
+  upserts records by a caller-selected unique key.
+- `feishu_bitable_edit` inspects and manages Bitable metadata, tables, fields,
+  views, and records.
 - `feishu_board_edit` inspects/creates/deletes Board nodes and changes its theme.
 - `feishu_task_edit` creates and manages Task v2 tasks and their relationships.
 - `feishu_wiki` resolves Wiki links, reads docx-backed pages, lists and searches
   knowledge spaces, and creates, renames, moves, or copies Wiki nodes.
+
+### Document-authoring skill
+
+The plugin registers the opt-in skill
+`feishu-bot-enhancements:document-authoring`. Load it for multi-step document
+composition, especially embedded Bitable creation and updates. It explains the
+distinction between a Bitable kanban and a whiteboard, safe partial-result
+recovery, canonical Block preservation, idempotent record synchronization, and
+the field/record/view ordering an Agent must follow.
+
+For a new embedded Bitable, prefer `feishu_doc_embed_bitable` over a raw
+`bitable` Block. Supply `setup` to create fields and records before advanced
+views. For an existing document, resolve the unique Block first and pass its
+IDs to `feishu_bitable_sync`. The sync tool never deletes omitted records and
+never recreates a matching canonical view.
+
+Feishu's server API does not expose reliable read/write access to the editor's
+gantt start/end-field or kanban grouping-field selections. The tools validate
+candidate fields and return `needs_manual_configuration`; an Agent must not
+equate a correct `view_type` with a visually verified view.
 
 ### Wiki knowledge-base access
 
@@ -283,8 +310,9 @@ Embedded-object editing uses one operation-oriented tool per API family:
 
 - Sheet writes or appends values/formulas, applies styles, adds/inserts/deletes/
   moves rows or columns, and batches worksheet add/copy/delete requests.
-- Bitable updates app metadata and provides table, field, view, and batch record
-  create/update/delete operations.
+- Bitable resolves embedded identifiers, performs bounded full reads and
+  declarative idempotent synchronization, updates app metadata, and provides
+  table, field, view, and batch record create/update/delete operations.
 - Board lists nodes or the theme, creates nodes, recursively deletes nodes, and
   switches theme.
 - Task v2 creates/updates/deletes tasks and adds/removes members, reminders,
@@ -364,9 +392,11 @@ feishu-bot-enhancements/
 │   ├── document_objects.py             # Blocks, formulas, images, attachments
 │   ├── document_management.py          # Block inspection, comments, lifecycle
 │   ├── document_domains.py             # Sheet, Bitable, Board, and Task APIs
+│   ├── bitable_workflows.py             # Reliable embedded Base resolve/sync
 │   ├── wiki_tools.py                    # Wiki resolution, browsing, and nodes
 │   ├── plugin.py                       # Adapter composition and registration
 │   └── menu_events.py                  # Custom-menu enhancement
+├── skills/document-authoring/          # Agent workflow for Feishu doc composition
 ├── tests/
 ├── requirements-dev.txt                # Isolated test dependencies
 ├── CHANGELOG.md

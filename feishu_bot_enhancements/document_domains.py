@@ -2,11 +2,27 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from tools.registry import tool_error, tool_result
 
-from .document_tools import _check_feishu, _client_or_error, _request
+from .bitable_workflows import (
+    BITABLE_SETUP_SCHEMA,
+    FEISHU_BITABLE_SYNC_SCHEMA,
+    FEISHU_DOC_RESOLVE_BITABLE_SCHEMA,
+    handle_bitable_sync,
+    handle_doc_resolve_bitable,
+    list_all_pages,
+    split_embedded_bitable_token,
+    sync_bitable,
+)
+from .document_tools import (
+    _CREATE_CHILDREN_URI,
+    _check_feishu,
+    _client_or_error,
+    _request,
+)
 
 
 _DATA_SCHEMA = {
@@ -53,10 +69,13 @@ FEISHU_SHEET_EDIT_SCHEMA = {
 FEISHU_BITABLE_EDIT_SCHEMA = {
     "name": "feishu_bitable_edit",
     "description": (
-        "Edit the internal structure and records of a Feishu Bitable. Supports "
-        "app metadata, batch table creation/deletion, field and view CRUD, and "
-        "batch record creation/update/deletion. data is the corresponding "
-        "official request body (for example {records:[{fields:{...}}]})."
+        "Inspect and edit a Feishu Bitable. Supports app/table/field/view/record "
+        "reads, app metadata updates, batch table creation/deletion, field and "
+        "view CRUD, and batch record creation/update/deletion. Read operations "
+        "accept data={page_size,page_token} or data={fetch_all:true,max_items:N}; "
+        "write data is the corresponding "
+        "official request body. Use list_tables after creating an embedded "
+        "Bitable instead of guessing its table_id."
     ),
     "parameters": {
         "type": "object",
@@ -65,6 +84,11 @@ FEISHU_BITABLE_EDIT_SCHEMA = {
             "operation": {
                 "type": "string",
                 "enum": [
+                    "get_app",
+                    "list_tables",
+                    "list_fields",
+                    "list_views",
+                    "list_records",
                     "update_app",
                     "batch_create_tables",
                     "batch_delete_tables",
@@ -85,6 +109,56 @@ FEISHU_BITABLE_EDIT_SCHEMA = {
             "data": _DATA_SCHEMA,
         },
         "required": ["app_token", "operation", "data"],
+    },
+}
+
+
+FEISHU_DOC_EMBED_BITABLE_SCHEMA = {
+    "name": "feishu_doc_embed_bitable",
+    "description": (
+        "Create a new Bitable embedded in a Feishu docx document and return its "
+        "block_id, app_token, and default table_id. grid and kanban are native "
+        "Docx initial views. gallery, gantt, and form are created as additional "
+        "Bitable views because Docx only supports grid/kanban initially; the "
+        "result marks when a manual view switch is required. If a partial result "
+        "is returned, continue with feishu_bitable_edit and do not create a "
+        "duplicate block. Load feishu-bot-enhancements:document-authoring for "
+        "the complete workflow."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "document_id": {"type": "string"},
+            "parent_block_id": {
+                "type": "string",
+                "description": "Defaults to the document root block.",
+            },
+            "index": {
+                "type": "integer",
+                "default": -1,
+                "description": "Insertion index; -1 appends.",
+            },
+            "view_type": {
+                "type": "string",
+                "enum": ["grid", "kanban", "gallery", "gantt", "form"],
+                "default": "grid",
+            },
+            "view_name": {
+                "type": "string",
+                "description": (
+                    "Name for gallery/gantt/form views; defaults to the type name."
+                ),
+            },
+            "setup": {
+                **BITABLE_SETUP_SCHEMA,
+                "description": (
+                    "Optional single-call, resumable setup. Fields and records are written before "
+                    "gantt/kanban/gallery/form views are created. For gantt set "
+                    "start_field/end_field; for kanban set group_field."
+                ),
+            },
+        },
+        "required": ["document_id"],
     },
 }
 
@@ -273,6 +347,274 @@ def handle_sheet_edit(args: dict, **_: Any) -> str:
     return tool_result(success=True, operation=operation, **response)
 
 
+_BITABLE_READ_OPERATIONS = {
+    "get_app",
+    "list_tables",
+    "list_fields",
+    "list_views",
+    "list_records",
+}
+_BITABLE_TABLE_OPERATIONS = {
+    "list_fields",
+    "list_views",
+    "list_records",
+    "create_field",
+    "update_field",
+    "delete_field",
+    "create_view",
+    "update_view",
+    "delete_view",
+    "batch_create_records",
+    "batch_update_records",
+    "batch_delete_records",
+}
+_DIRECT_DOCX_BITABLE_VIEWS = {"grid": 1, "kanban": 2}
+_BITABLE_VIEW_TYPES = {*_DIRECT_DOCX_BITABLE_VIEWS, "gallery", "gantt", "form"}
+
+
+def _positive_page_size(
+    data: dict[str, Any], maximum: int = 100
+) -> tuple[int, str | None]:
+    value = data.get("page_size", maximum)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= maximum
+    ):
+        return 0, f"data.page_size must be an integer between 1 and {maximum}"
+    return value, None
+
+
+def _bitable_read_queries(
+    operation: str, data: dict[str, Any], view_id: str
+) -> tuple[list[tuple[str, str]], str | None]:
+    page_size, error = _positive_page_size(data)
+    if error:
+        return [], error
+    queries = [
+        ("user_id_type", "open_id"),
+        ("page_size", str(page_size)),
+    ]
+    page_token = str(data.get("page_token") or "").strip()
+    if page_token:
+        queries.append(("page_token", page_token))
+    if operation == "list_records" and view_id:
+        queries.append(("view_id", view_id))
+    return queries, None
+
+
+def _document_index(value: Any) -> tuple[int | None, str | None]:
+    if isinstance(value, bool):
+        return None, "index must be an integer"
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return None, "index must be an integer"
+    if index < -1:
+        return None, "index must be -1 or greater"
+    return index, None
+
+
+def _created_bitable_identity(data: dict[str, Any]) -> tuple[str, str]:
+    children = data.get("children")
+    if (
+        not isinstance(children, list)
+        or not children
+        or not isinstance(children[0], dict)
+    ):
+        return "", ""
+    child = children[0]
+    bitable = child.get("bitable")
+    if not isinstance(bitable, dict):
+        return str(child.get("block_id") or ""), ""
+    return str(child.get("block_id") or ""), str(bitable.get("token") or "")
+
+
+def _lookup_first_bitable_table(
+    client: Any, app_token: str
+) -> tuple[str, dict[str, Any], str | None]:
+    last_error = "Bitable default table is not visible yet"
+    last_data: dict[str, Any] = {}
+    for attempt in range(3):
+        code, msg, data = _request(
+            client,
+            "GET",
+            "/open-apis/bitable/v1/apps/:app_token/tables",
+            paths={"app_token": app_token},
+            queries=[("page_size", "100")],
+        )
+        last_data = data
+        items = data.get("items")
+        if code == 0 and isinstance(items, list) and items:
+            first = items[0]
+            if isinstance(first, dict) and str(first.get("table_id") or "").strip():
+                return str(first["table_id"]), first, None
+        if code != 0:
+            return "", data, (
+                f"List embedded Bitable tables failed: code={code} msg={msg}"
+            )
+        last_error = "Embedded Bitable exists but its default table is not visible yet"
+        if attempt < 2:
+            time.sleep(0.2 * (attempt + 1))
+    return "", last_data, last_error
+
+
+def handle_doc_embed_bitable(args: dict, **_: Any) -> str:
+    document_id = str(args.get("document_id") or "").strip()
+    parent_block_id = str(args.get("parent_block_id") or document_id).strip()
+    requested_view = str(args.get("view_type") or "grid").strip().lower()
+    view_name = str(args.get("view_name") or requested_view.title()).strip()
+    if not document_id or not parent_block_id:
+        return tool_error("document_id is required")
+    if requested_view not in _BITABLE_VIEW_TYPES:
+        return tool_error("view_type must be grid, kanban, gallery, gantt, or form")
+    if requested_view not in _DIRECT_DOCX_BITABLE_VIEWS and not view_name:
+        return tool_error("view_name must be non-empty")
+    index, error = _document_index(args.get("index", -1))
+    if error:
+        return tool_error(error)
+
+    setup = args.get("setup")
+    if setup is not None and not isinstance(setup, dict):
+        return tool_error("setup must be an object")
+    client, error = _client_or_error()
+    if error:
+        return error
+    # A configured kanban must be created only after its grouping field exists.
+    # Advanced views likewise need fields and records before view creation.
+    embedded_view = (
+        requested_view
+        if setup is None and requested_view in _DIRECT_DOCX_BITABLE_VIEWS
+        else "grid"
+    )
+    code, msg, create_data = _request(
+        client,
+        "POST",
+        _CREATE_CHILDREN_URI,
+        paths={"document_id": document_id, "block_id": parent_block_id},
+        queries=[("document_revision_id", "-1")],
+        body={
+            "index": index,
+            "children": [
+                {
+                    "block_type": 18,
+                    "bitable": {"view_type": _DIRECT_DOCX_BITABLE_VIEWS[embedded_view]},
+                }
+            ],
+        },
+    )
+    if code != 0:
+        return tool_error(f"Create embedded Bitable failed: code={code} msg={msg}")
+
+    block_id, raw_token = _created_bitable_identity(create_data)
+    app_token, token_table_id = split_embedded_bitable_token(raw_token)
+    base_result: dict[str, Any] = {
+        "success": True,
+        "status": "complete",
+        "document_id": document_id,
+        "block_id": block_id,
+        "raw_token": raw_token,
+        "app_token": app_token,
+        "requested_view_type": requested_view,
+        "embedded_view_type": embedded_view,
+        "requires_manual_view_switch": requested_view != embedded_view,
+    }
+    if "document_revision_id" in create_data:
+        base_result["document_revision_id"] = create_data["document_revision_id"]
+    if not app_token:
+        base_result.update(
+            status="partial",
+            setup_error=(
+                "The Bitable block was created but Feishu did not return its app_token. "
+                "Inspect the block before continuing; do not create another block."
+            ),
+        )
+        return tool_result(**base_result)
+
+    table_id = token_table_id
+    table: dict[str, Any] = {}
+    table_error: str | None = None
+    if not table_id:
+        table_id, table, table_error = _lookup_first_bitable_table(client, app_token)
+    if table_id:
+        base_result["table_id"] = table_id
+        if table:
+            base_result["table"] = table
+    else:
+        base_result.update(
+            status="partial",
+            setup_error=(
+                f"{table_error}. The embedded block already exists; use "
+                "feishu_bitable_edit list_tables with the returned app_token. "
+                "Do not create another block."
+            ),
+        )
+        return tool_result(**base_result)
+
+    if setup is None:
+        if requested_view == "grid":
+            return tool_result(**base_result)
+        if requested_view == "kanban":
+            base_result.update(
+                status="needs_manual_configuration",
+                manual_actions=[
+                    "Create a single-select grouping field and confirm the embedded "
+                    "kanban groups by it. Prefer setup.group_field for reliable creation."
+                ],
+            )
+            return tool_result(**base_result)
+        base_result.update(
+            status="needs_setup",
+            setup_error=(
+                f"The embedded grid exists, but the requested {requested_view} view "
+                "was intentionally not created against an empty table. Call "
+                "feishu_bitable_sync with fields, records, and the requested view; "
+                "do not create another embedded block."
+            ),
+        )
+        return tool_result(**base_result)
+
+    config = dict(setup)
+    views = list(config.get("views") or [])
+    if requested_view != "grid" and not any(
+        isinstance(item, dict)
+        and str(item.get("view_name") or "").strip() == view_name
+        for item in views
+    ):
+        requested_spec: dict[str, Any] = {
+            "view_name": view_name,
+            "view_type": requested_view,
+        }
+        if requested_view == "gantt":
+            requested_spec["start_field"] = str(config.get("start_field") or "").strip()
+            requested_spec["end_field"] = str(config.get("end_field") or "").strip()
+        elif requested_view == "kanban":
+            requested_spec["group_field"] = str(config.get("group_field") or "").strip()
+        views.append(requested_spec)
+    config["views"] = views
+    for convenience_key in ("start_field", "end_field", "group_field"):
+        config.pop(convenience_key, None)
+    if "delete_blank_records" not in config:
+        config["delete_blank_records"] = True
+    try:
+        sync_result = sync_bitable(client, app_token, table_id, config)
+    except RuntimeError as exc:
+        base_result.update(
+            status="partial",
+            setup_error=(
+                f"Embedded Bitable setup failed: {exc}. The embedded block already "
+                "exists; fix the configuration and continue with feishu_bitable_sync. "
+                "Do not create another block."
+            ),
+        )
+        return tool_result(**base_result)
+
+    base_result["status"] = sync_result["status"]
+    base_result["sync"] = sync_result
+    base_result["manual_actions"] = sync_result["manual_actions"]
+    return tool_result(**base_result)
+
+
 def handle_bitable_edit(args: dict, **_: Any) -> str:
     app_token = str(args.get("app_token") or "").strip()
     operation = str(args.get("operation") or "").strip()
@@ -285,11 +627,7 @@ def handle_bitable_edit(args: dict, **_: Any) -> str:
     table_id = str(args.get("table_id") or "").strip()
     field_id = str(args.get("field_id") or "").strip()
     view_id = str(args.get("view_id") or "").strip()
-    needs_table = operation in {
-        "create_field", "update_field", "delete_field", "create_view",
-        "update_view", "delete_view", "batch_create_records",
-        "batch_update_records", "batch_delete_records",
-    }
+    needs_table = operation in _BITABLE_TABLE_OPERATIONS
     if needs_table and not table_id:
         return tool_error("table_id is required for this operation")
     if operation in {"update_field", "delete_field"} and not field_id:
@@ -301,14 +639,25 @@ def handle_bitable_edit(args: dict, **_: Any) -> str:
     paths = {"app_token": app_token}
     method, uri = "POST", base
     body: dict[str, Any] | None = data
-    if operation == "update_app":
+    queries = [("user_id_type", "open_id")]
+    if operation == "get_app":
+        method, body = "GET", None
+    elif operation == "list_tables":
+        method, uri, body = "GET", f"{base}/tables", None
+    elif operation == "update_app":
         method, uri = "PUT", base
     elif operation in {"batch_create_tables", "batch_delete_tables"}:
         uri = f"{base}/tables/{'batch_create' if operation.endswith('create_tables') else 'batch_delete'}"
     else:
         paths["table_id"] = table_id
         table_base = f"{base}/tables/:table_id"
-        if operation.endswith("_field"):
+        if operation == "list_fields":
+            method, uri, body = "GET", f"{table_base}/fields", None
+        elif operation == "list_views":
+            method, uri, body = "GET", f"{table_base}/views", None
+        elif operation == "list_records":
+            method, uri, body = "GET", f"{table_base}/records", None
+        elif operation.endswith("_field"):
             uri = f"{table_base}/fields"
             if operation != "create_field":
                 uri += "/:field_id"
@@ -327,17 +676,56 @@ def handle_bitable_edit(args: dict, **_: Any) -> str:
                 "batch_delete_records": "batch_delete",
             }[operation]
             uri = f"{table_base}/records/{record_suffix}"
+    if (
+        operation in _BITABLE_READ_OPERATIONS
+        and "fetch_all" in data
+        and not isinstance(data["fetch_all"], bool)
+    ):
+        return tool_error("data.fetch_all must be a boolean")
+    if operation in _BITABLE_READ_OPERATIONS and operation != "get_app":
+        queries, error = _bitable_read_queries(operation, data, view_id)
+        if error:
+            return tool_error(error)
     if method == "DELETE":
         body = None
     client, error = _client_or_error()
     if error:
         return error
+    if operation in _BITABLE_READ_OPERATIONS - {"get_app"} and data.get("fetch_all") is True:
+        if data.get("page_token"):
+            return tool_error("data.page_token cannot be combined with fetch_all")
+        max_items = data.get("max_items", 5000)
+        if (
+            isinstance(max_items, bool)
+            or not isinstance(max_items, int)
+            or not 1 <= max_items <= 20000
+        ):
+            return tool_error("data.max_items must be an integer between 1 and 20000")
+        page_size, pagination_error = _positive_page_size(data)
+        if pagination_error:
+            return tool_error(pagination_error)
+        base_queries = [("user_id_type", "open_id")]
+        if operation == "list_records" and view_id:
+            base_queries.append(("view_id", view_id))
+        try:
+            response = list_all_pages(
+                client,
+                uri,
+                paths=paths,
+                page_size=page_size,
+                max_items=max_items,
+                base_queries=base_queries,
+                operation=f"Bitable {operation}",
+            )
+        except RuntimeError as exc:
+            return tool_error(str(exc))
+        return tool_result(success=True, operation=operation, **response)
     code, msg, response = _request(
         client,
         method,
         uri,
         paths=paths,
-        queries=[("user_id_type", "open_id")],
+        queries=queries,
         body=body,
     )
     if code != 0:
@@ -431,7 +819,10 @@ def handle_task_edit(args: dict, **_: Any) -> str:
 def register_document_domain_tools(ctx: Any) -> None:
     for name, schema, handler, description, emoji in (
         ("feishu_sheet_edit", FEISHU_SHEET_EDIT_SCHEMA, handle_sheet_edit, "Edit Sheet cells, styles, rows, columns, and tabs", "📊"),
-        ("feishu_bitable_edit", FEISHU_BITABLE_EDIT_SCHEMA, handle_bitable_edit, "Edit Bitable tables, fields, views, and records", "🗃️"),
+        ("feishu_doc_resolve_bitable", FEISHU_DOC_RESOLVE_BITABLE_SCHEMA, handle_doc_resolve_bitable, "Resolve the unique Bitable embedded in a document", "🔎"),
+        ("feishu_doc_embed_bitable", FEISHU_DOC_EMBED_BITABLE_SCHEMA, handle_doc_embed_bitable, "Create and safely configure an embedded Bitable", "🧩"),
+        ("feishu_bitable_sync", FEISHU_BITABLE_SYNC_SCHEMA, handle_bitable_sync, "Declaratively configure and idempotently sync a Bitable", "🔄"),
+        ("feishu_bitable_edit", FEISHU_BITABLE_EDIT_SCHEMA, handle_bitable_edit, "Inspect and edit Bitable tables, fields, views, and records", "🗃️"),
         ("feishu_board_edit", FEISHU_BOARD_EDIT_SCHEMA, handle_board_edit, "Inspect/create/delete Board nodes and update its theme", "🎨"),
         ("feishu_task_edit", FEISHU_TASK_EDIT_SCHEMA, handle_task_edit, "Create and fully manage Feishu Task v2 tasks", "✅"),
     ):
@@ -449,6 +840,9 @@ def register_document_domain_tools(ctx: Any) -> None:
 
 
 __all__ = [
+    "handle_bitable_sync",
+    "handle_doc_resolve_bitable",
+    "handle_doc_embed_bitable",
     "handle_bitable_edit",
     "handle_board_edit",
     "handle_sheet_edit",

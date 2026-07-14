@@ -1456,6 +1456,517 @@ def test_sheet_edit_operation_matrix():
     }
 
 
+def test_embed_bitable_defers_gantt_until_fields_and_records_exist():
+    plugin = _load_plugin_module()
+    client = _RecordingClient(
+        [
+            {
+                "document_revision_id": 12,
+                "children": [
+                    {
+                        "block_id": "blk_bitable",
+                        "block_type": 18,
+                        "bitable": {
+                            "token": "app_embedded_tbl_default",
+                            "view_type": 1,
+                        },
+                    }
+                ],
+            },
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_domains.handle_doc_embed_bitable(
+            {
+                "document_id": "doxcn_doc",
+                "view_type": "gantt",
+                "view_name": "Project timeline",
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "needs_setup"
+    assert result["block_id"] == "blk_bitable"
+    assert result["app_token"] == "app_embedded"
+    assert result["table_id"] == "tbl_default"
+    assert result["embedded_view_type"] == "grid"
+    assert result["requires_manual_view_switch"] is True
+    assert "intentionally not created against an empty table" in result["setup_error"]
+    assert [request.http_method for request in client.requests] == [HttpMethod.POST]
+    assert client.requests[0].body["children"] == [
+        {"block_type": 18, "bitable": {"view_type": 1}}
+    ]
+
+
+def test_embed_bitable_creates_native_kanban_without_extra_view():
+    plugin = _load_plugin_module()
+    client = _RecordingClient(
+        [
+            {
+                "children": [
+                    {
+                        "block_id": "blk_kanban",
+                        "bitable": {"token": "app_kanban", "view_type": 2},
+                    }
+                ]
+            },
+            {"items": [{"table_id": "tbl_kanban", "name": "Table 1"}]},
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_domains.handle_doc_embed_bitable(
+            {"document_id": "doxcn_doc", "view_type": "kanban"}
+        )
+    )
+
+    assert result["status"] == "needs_manual_configuration"
+    assert result["embedded_view_type"] == "kanban"
+    assert result["requires_manual_view_switch"] is False
+    assert "created_view" not in result
+    assert len(client.requests) == 2
+    assert client.requests[0].body["children"][0]["bitable"]["view_type"] == 2
+
+
+def test_embed_bitable_reports_partial_declarative_setup_without_duplicate_retry():
+    plugin = _load_plugin_module()
+
+    class PartialClient:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, request):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                code, msg, data = 0, "success", {
+                    "children": [
+                        {
+                            "block_id": "blk_partial",
+                            "bitable": {
+                                "token": "app_partial_tbl_partial",
+                                "view_type": 1,
+                            },
+                        }
+                    ]
+                }
+            elif request.uri.endswith("/fields"):
+                code, msg, data = 0, "success", {
+                    "items": [
+                        {
+                            "field_id": "fld_primary",
+                            "field_name": "Text",
+                            "type": 1,
+                            "is_primary": True,
+                        }
+                    ]
+                }
+            else:
+                code, msg, data = 0, "success", {"items": []}
+            return SimpleNamespace(
+                code=code,
+                msg=msg,
+                raw=SimpleNamespace(content=json.dumps({"data": data})),
+            )
+
+    client = PartialClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+    result = json.loads(
+        plugin._document_domains.handle_doc_embed_bitable(
+            {"document_id": "doxcn_doc", "view_type": "gantt", "setup": {}}
+        )
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "partial"
+    assert result["block_id"] == "blk_partial"
+    assert result["app_token"] == "app_partial"
+    assert "Do not create another block" in result["setup_error"]
+    assert sum(request.uri.endswith("/children") for request in client.requests) == 1
+
+
+def test_embed_bitable_can_create_and_populate_grid_in_one_call():
+    plugin = _load_plugin_module()
+    task_field = {
+        "field_id": "fld_task",
+        "field_name": "Task",
+        "type": 1,
+        "is_primary": True,
+    }
+    client = _RecordingClient(
+        [
+            {
+                "children": [
+                    {
+                        "block_id": "blk_grid",
+                        "bitable": {"token": "app_grid_tbl_grid", "view_type": 1},
+                    }
+                ]
+            },
+            {
+                "items": [
+                    {
+                        "field_id": "fld_primary",
+                        "field_name": "Text",
+                        "type": 1,
+                        "is_primary": True,
+                    }
+                ],
+                "has_more": False,
+            },
+            {"field": task_field},
+            {"items": [task_field], "has_more": False},
+            {"items": [{"record_id": "blank", "fields": {}}], "has_more": False},
+            {},
+            {},
+            {"items": [], "has_more": False},
+            {
+                "items": [
+                    {"record_id": "rec1", "fields": {"Task": "First task"}}
+                ],
+                "has_more": False,
+            },
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_domains.handle_doc_embed_bitable(
+            {
+                "document_id": "doc",
+                "view_type": "grid",
+                "setup": {
+                    "fields": [{"field_name": "Task", "type": 1, "primary": True}],
+                    "records": [{"fields": {"Task": "First task"}}],
+                    "key_field": "Task",
+                },
+            }
+        )
+    )
+
+    assert result["status"] == "complete"
+    assert result["app_token"] == "app_grid"
+    assert result["table_id"] == "tbl_grid"
+    assert result["sync"]["created_records"] == 1
+    assert result["sync"]["deleted_blank_records"] == 1
+    assert sum(request.uri.endswith("/children") for request in client.requests) == 1
+
+
+def test_bitable_read_operations_resolve_metadata_ids():
+    plugin = _load_plugin_module()
+    client = _RecordingClient()
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+    calls = [
+        ("get_app", {}, {}),
+        ("list_tables", {}, {"page_size": 50}),
+        ("list_fields", {"table_id": "tbl"}, {"page_size": 50}),
+        ("list_views", {"table_id": "tbl"}, {"page_size": 50}),
+        (
+            "list_records",
+            {"table_id": "tbl", "view_id": "vew"},
+            {"page_size": 50, "page_token": "next"},
+        ),
+    ]
+    for operation, ids, data in calls:
+        result = json.loads(
+            plugin._document_domains.handle_bitable_edit(
+                {"app_token": "app", "operation": operation, "data": data, **ids}
+            )
+        )
+        assert result["success"] is True
+
+    assert all(request.http_method == HttpMethod.GET for request in client.requests)
+    assert [request.uri.rsplit("/", 1)[-1] for request in client.requests] == [
+        ":app_token",
+        "tables",
+        "fields",
+        "views",
+        "records",
+    ]
+    assert ("page_size", "50") in client.requests[1].queries
+    assert ("page_token", "next") in client.requests[4].queries
+    assert ("view_id", "vew") in client.requests[4].queries
+
+
+def test_bitable_read_fetch_all_follows_pages():
+    plugin = _load_plugin_module()
+    client = _RecordingClient(
+        [
+            {
+                "items": [{"record_id": "rec1"}],
+                "has_more": True,
+                "page_token": "next",
+            },
+            {"items": [{"record_id": "rec2"}], "has_more": False},
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_domains.handle_bitable_edit(
+            {
+                "app_token": "app",
+                "table_id": "tbl",
+                "operation": "list_records",
+                "data": {"fetch_all": True, "max_items": 10},
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["page_count"] == 2
+    assert [item["record_id"] for item in result["items"]] == ["rec1", "rec2"]
+    assert ("page_token", "next") in client.requests[1].queries
+
+
+def test_resolve_document_bitable_requires_unique_match_and_splits_token():
+    plugin = _load_plugin_module()
+    client = _RecordingClient(
+        [
+            {
+                "items": [
+                    {
+                        "block_id": "blk_base",
+                        "parent_id": "doc",
+                        "bitable": {
+                            "token": "app_canonical_tbl_tasks",
+                            "view_type": 1,
+                        },
+                    }
+                ],
+                "has_more": True,
+                "page_token": "page2",
+            },
+            {"items": [{"block_id": "blk_text", "text": {}}], "has_more": False},
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_domains.handle_doc_resolve_bitable(
+            {"document_id": "doc", "require_unique": True}
+        )
+    )
+
+    assert result["count"] == 1
+    assert result["page_count"] == 2
+    assert result["resolved"] == {
+        "block_id": "blk_base",
+        "parent_id": "doc",
+        "raw_token": "app_canonical_tbl_tasks",
+        "app_token": "app_canonical",
+        "table_id": "tbl_tasks",
+        "embedded_view_type": 1,
+    }
+
+
+def test_bitable_sync_populates_dates_before_gantt_and_kanban_views():
+    plugin = _load_plugin_module()
+    initial_fields = [
+        {
+            "field_id": "fld_primary",
+            "field_name": "Text",
+            "type": 1,
+            "is_primary": True,
+        }
+    ]
+    final_fields = [
+        {"field_id": "fld_task", "field_name": "Task", "type": 1, "is_primary": True},
+        {"field_id": "fld_start", "field_name": "Start", "type": 5},
+        {"field_id": "fld_end", "field_name": "End", "type": 5},
+        {"field_id": "fld_status", "field_name": "Status", "type": 3},
+    ]
+    record_fields = {
+        "Task": "Investigate import",
+        "Start": 1000,
+        "End": 2000,
+        "Status": "Done",
+    }
+    client = _RecordingClient(
+        [
+            {"items": initial_fields, "has_more": False},
+            {"field": final_fields[0]},
+            {"field": final_fields[1]},
+            {"field": final_fields[2]},
+            {"field": final_fields[3]},
+            {"items": final_fields, "has_more": False},
+            {"items": [{"record_id": "blank", "fields": {}}], "has_more": False},
+            {},
+            {},
+            {"items": [], "has_more": False},
+            {"view": {"view_id": "vew_gantt", "view_name": "Timeline", "view_type": "gantt"}},
+            {"view": {"view_id": "vew_kanban", "view_name": "Board", "view_type": "kanban"}},
+            {"items": [{"record_id": "rec1", "fields": record_fields}], "has_more": False},
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_domains.handle_bitable_sync(
+            {
+                "app_token": "app",
+                "table_id": "tbl",
+                "fields": [
+                    {"field_name": "Task", "type": 1, "primary": True},
+                    {"field_name": "Start", "type": 5},
+                    {"field_name": "End", "type": 5},
+                    {"field_name": "Status", "type": 3},
+                ],
+                "records": [{"fields": record_fields}],
+                "key_field": "Task",
+                "delete_blank_records": True,
+                "views": [
+                    {
+                        "view_name": "Timeline",
+                        "view_type": "gantt",
+                        "start_field": "Start",
+                        "end_field": "End",
+                    },
+                    {
+                        "view_name": "Board",
+                        "view_type": "kanban",
+                        "group_field": "Status",
+                    },
+                ],
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "needs_manual_configuration"
+    assert result["renamed_primary_fields"] == 1
+    assert result["created_fields"] == 3
+    assert result["created_records"] == 1
+    assert result["deleted_blank_records"] == 1
+    assert result["created_views"] == 2
+    assert result["verified_records"] == 1
+    record_write_index = next(
+        index
+        for index, request in enumerate(client.requests)
+        if request.uri.endswith("/records/batch_create")
+    )
+    view_write_indexes = [
+        index
+        for index, request in enumerate(client.requests)
+        if request.uri.endswith("/views") and request.http_method == HttpMethod.POST
+    ]
+    assert view_write_indexes and all(record_write_index < index for index in view_write_indexes)
+    assert result["views"][0]["binding_candidate_unambiguous"] is True
+    assert result["views"][1]["binding_candidate_unambiguous"] is True
+
+
+def test_bitable_sync_updates_existing_record_without_recreating_view():
+    plugin = _load_plugin_module()
+    fields = [
+        {"field_id": "fld_task", "field_name": "Task", "type": 1, "is_primary": True},
+        {"field_id": "fld_status", "field_name": "Status", "type": 3},
+    ]
+    expected = {"Task": "Importer", "Status": "Done"}
+    client = _RecordingClient(
+        [
+            {"items": fields, "has_more": False},
+            {"items": fields, "has_more": False},
+            {
+                "items": [
+                    {
+                        "record_id": "rec1",
+                        "fields": {"Task": "Importer", "Status": "Doing"},
+                    }
+                ],
+                "has_more": False,
+            },
+            {},
+            {
+                "items": [
+                    {
+                        "view_id": "vew_board",
+                        "view_name": "Board",
+                        "view_type": "kanban",
+                    }
+                ],
+                "has_more": False,
+            },
+            {"items": [{"record_id": "rec1", "fields": expected}], "has_more": False},
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_domains.handle_bitable_sync(
+            {
+                "app_token": "app",
+                "table_id": "tbl",
+                "fields": [
+                    {"field_name": "Task", "type": 1, "primary": True},
+                    {"field_name": "Status", "type": 3},
+                ],
+                "records": [{"fields": expected}],
+                "key_field": "Task",
+                "views": [
+                    {
+                        "view_name": "Board",
+                        "view_type": "kanban",
+                        "group_field": "Status",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result["created_records"] == 0
+    assert result["updated_records"] == 1
+    assert result["created_views"] == 0
+    assert result["views"][0]["created"] is False
+    updates = [request for request in client.requests if request.uri.endswith("batch_update")]
+    assert len(updates) == 1
+    assert updates[0].body == {
+        "records": [{"record_id": "rec1", "fields": expected}]
+    }
+
+
+def test_bitable_sync_refuses_to_initialize_gantt_without_dated_records():
+    plugin = _load_plugin_module()
+    fields = [
+        {"field_id": "fld_start", "field_name": "Start", "type": 5},
+        {"field_id": "fld_end", "field_name": "End", "type": 5},
+    ]
+    client = _RecordingClient(
+        [
+            {"items": fields, "has_more": False},
+            {"items": fields, "has_more": False},
+            {"items": [], "has_more": False},
+            {"items": [], "has_more": False},
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._document_domains.handle_bitable_sync(
+            {
+                "app_token": "app",
+                "table_id": "tbl",
+                "views": [
+                    {
+                        "view_name": "Timeline",
+                        "view_type": "gantt",
+                        "start_field": "Start",
+                        "end_field": "End",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert "requires at least one supplied dated record" in result["error"]
+    assert not any(
+        request.uri.endswith("/views") and request.http_method == HttpMethod.POST
+        for request in client.requests
+    )
+
+
 def test_bitable_board_and_task_operation_matrices():
     plugin = _load_plugin_module()
     client = _RecordingClient()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from gateway.platform_registry import platform_registry
 from plugins.platforms.feishu import adapter as _bundled
@@ -19,6 +20,7 @@ from .topic_context import TopicContextEnhancementMixin
 
 
 BundledFeishuAdapter = _bundled.FeishuAdapter
+_PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
 
 class EnhancedFeishuAdapter(
@@ -65,6 +67,14 @@ def register(ctx) -> None:
             source="plugin",
             plugin_name=ctx.manifest.name,
         )
+    )
+    ctx.register_skill(
+        "document-authoring",
+        _PLUGIN_ROOT / "skills" / "document-authoring" / "SKILL.md",
+        (
+            "Create and safely update Feishu documents, including idempotent "
+            "embedded Bitable grid, kanban, gallery, gantt, and form workflows."
+        ),
     )
     _document_tools.register_document_tools(ctx)
     _document_objects.register_document_object_tools(ctx)

@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.4.0
+
+- Add `feishu_doc_embed_bitable` with optional declarative setup for fields,
+  records, and grid, kanban, gallery, gantt, or form views.
+- Add `feishu_doc_resolve_bitable` to require and resolve one canonical embedded
+  Base before an Agent updates a document dashboard.
+- Add `feishu_bitable_sync` for bounded pagination, primary-field adoption,
+  key-based record upserts, optional blank-row cleanup, view creation, and
+  post-write verification.
+- Create gantt and configured kanban views only after their fields and records
+  exist; report UI-only date/group bindings as manual verification instead of
+  claiming visual completion.
+- Add Bitable reads for app metadata, tables, fields, views, and records,
+  including bounded automatic pagination.
+- Correctly split the read-only Docx `AppToken_TableID` Bitable token.
+- Preserve partially completed embedded Bitable creation as an explicit result
+  and direct the Agent to continue setup instead of duplicating the Block.
+- Register the `feishu-bot-enhancements:document-authoring` skill with view
+  selection, safe updates, Block preservation, and verification guidance.
+
 ## 4.3.1
 
 - Preflight document Block resource counts before sending create requests,

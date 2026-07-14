@@ -104,6 +104,7 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
 
         def __init__(self):
             self.hooks = []
+            self.skills = []
             self.tools = []
 
         def register_hook(self, name, callback):
@@ -111,6 +112,9 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
 
         def register_tool(self, **kwargs):
             self.tools.append(kwargs)
+
+        def register_skill(self, *args):
+            self.skills.append(args)
 
     context = FakeContext()
     plugin.register(context)
@@ -124,6 +128,19 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
     assert replacement.source == "plugin"
     assert replacement.plugin_name == "feishu-bot-enhancements"
     assert replacement.adapter_factory is plugin._build_adapter
+    assert context.skills == [
+        (
+            "document-authoring",
+            PLUGIN_ROOT
+            / "skills"
+                / "document-authoring"
+                / "SKILL.md",
+                (
+                    "Create and safely update Feishu documents, including idempotent "
+                    "embedded Bitable grid, kanban, gallery, gantt, and form workflows."
+                ),
+        )
+    ]
     assert context.hooks == [
         ("pre_tool_call", plugin._document_access.inject_document_client),
         ("post_tool_call", plugin._document_access.clear_document_client),
@@ -139,9 +156,12 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
         "feishu_doc_delete_blocks",
         "feishu_doc_get_blocks",
         "feishu_doc_comments",
-        "feishu_doc_manage",
-        "feishu_sheet_edit",
-        "feishu_bitable_edit",
+            "feishu_doc_manage",
+            "feishu_sheet_edit",
+            "feishu_doc_resolve_bitable",
+            "feishu_doc_embed_bitable",
+            "feishu_bitable_sync",
+            "feishu_bitable_edit",
         "feishu_board_edit",
         "feishu_task_edit",
         "feishu_wiki",

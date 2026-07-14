@@ -29,7 +29,10 @@ from .document_management import (
 )
 from .document_domains import (
     handle_bitable_edit,
+    handle_bitable_sync,
     handle_board_edit,
+    handle_doc_embed_bitable,
+    handle_doc_resolve_bitable,
     handle_sheet_edit,
     handle_task_edit,
     register_document_domain_tools,
@@ -47,6 +50,7 @@ __all__ = [
     "clear_document_client",
     "get_bound_client",
     "handle_bitable_edit",
+    "handle_bitable_sync",
     "handle_board_edit",
     "handle_doc_comments",
     "handle_doc_get_blocks",
@@ -54,6 +58,8 @@ __all__ = [
     "handle_doc_append_text",
     "handle_doc_create",
     "handle_doc_delete_blocks",
+    "handle_doc_embed_bitable",
+    "handle_doc_resolve_bitable",
     "handle_doc_insert_blocks",
     "handle_doc_insert_media",
     "handle_doc_share",
