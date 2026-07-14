@@ -13,7 +13,7 @@ revision is automatically compatible.
 | Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
 | Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
 | Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
-| This enhancement plugin | `feishu-bot-enhancements 4.1.2` | `plugin.yaml` |
+| This enhancement plugin | `feishu-bot-enhancements 4.1.3` | `plugin.yaml` |
 
 The plugin composes the bundled Feishu adapter and imports its public runtime
 entry points instead of patching Hermes source. When upgrading Hermes or the
@@ -57,10 +57,20 @@ Listens for `application.bot.menu_v6` and safely translates namespaced menu keys
 
 - `hermes.model.status` → `/model`
 - `hermes.model.<model-id>` → `/model <model-id> --session`
+- `hermes.model.<provider>.<model-id>` →
+  `/model <model-id> --provider <provider> --session`
 - `hermes.reasoning.status` → `/reasoning`
 - `hermes.reasoning.<effort>` → `/reasoning <effort>`
 
-Unsupported or unsafe event keys are rejected. Menu actions are routed only to a previously established root DM for the app-scoped operator ID. Routing is read from Hermes' canonical `state.db` gateway index, with `sessions.json` retained only as a legacy fallback.
+The provider is optional for backward compatibility. Prefer the provider-aware
+form when the same model ID exists on multiple backends; for example,
+`hermes.model.openai-codex.gpt-5.6-sol` avoids routing GPT to the API-key-only
+`openai-api` provider. A dotted prefix is recognized as a provider only when it
+matches a registered Hermes provider, so existing dotted model IDs continue to
+work. Unsupported or unsafe event keys are rejected. Menu actions are routed
+only to a previously established root DM for the app-scoped operator ID.
+Routing is read from Hermes' canonical `state.db` gateway index, with
+`sessions.json` retained only as a legacy fallback.
 
 ### Document reading in normal chats
 

@@ -1,5 +1,5 @@
 name: feishu-bot-enhancements
-version: "4.1.2"
+version: "4.1.3"
 description: Central extension suite for enhancements shared by all Hermes Feishu bots
 kind: standalone
 author: Hermes Agent

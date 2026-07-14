@@ -13,7 +13,28 @@ from plugins.platforms.feishu import adapter as _bundled
 
 logger = logging.getLogger("hermes.plugins.feishu_bot_enhancements.menu_events")
 _SAFE_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\Z")
+_SAFE_PROVIDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 _SAFE_REASONING = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
+
+
+def _split_model_selection(selection: str) -> tuple[str | None, str]:
+    """Recognize ``<provider>.<model>`` without breaking legacy model IDs.
+
+    The prefix is treated as a provider only when it names a registered Hermes
+    provider. Consequently dotted bare model IDs such as ``gpt-5.6-sol`` keep
+    their existing meaning, while ``openai-codex.gpt-5.6-sol`` is explicit.
+    """
+    provider, separator, model = selection.partition(".")
+    if not separator or not model or not _SAFE_PROVIDER.fullmatch(provider):
+        return None, selection
+    try:
+        from providers import get_provider_profile
+
+        if get_provider_profile(provider) is not None:
+            return provider, model
+    except Exception:
+        logger.debug("Unable to resolve menu model provider %r", provider, exc_info=True)
+    return None, selection
 
 
 def parse_menu_command(event_key: str) -> str | None:
@@ -24,6 +45,9 @@ def parse_menu_command(event_key: str) -> str | None:
         if model == "status":
             return "/model"
         if _SAFE_MODEL.fullmatch(model):
+            provider, model = _split_model_selection(model)
+            if provider is not None:
+                return f"/model {model} --provider {provider} --session"
             return f"/model {model} --session"
         return None
     if key.startswith("hermes.reasoning."):

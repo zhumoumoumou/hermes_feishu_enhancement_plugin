@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.1.3
+
+- Add optional provider-aware Feishu menu model keys while retaining legacy
+  model-only keys and session-scoped switching behavior.
+
 ## 4.1.2
 
 - Add a ready-to-import Feishu permission JSON covering the plugin's complete

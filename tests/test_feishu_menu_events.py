@@ -151,8 +151,17 @@ def test_register_wraps_existing_feishu_entry_without_copying_metadata(monkeypat
 @pytest.mark.parametrize(
     ("event_key", "expected"),
     [
+        (
+            "hermes.model.openai-codex.gpt-5.6-sol",
+            "/model gpt-5.6-sol --provider openai-codex --session",
+        ),
+        (
+            "hermes.model.deepseek.deepseek-v4-pro",
+            "/model deepseek-v4-pro --provider deepseek --session",
+        ),
         ("hermes.model.gpt-5.6-sol", "/model gpt-5.6-sol --session"),
         ("hermes.model.deepseek-v4-pro", "/model deepseek-v4-pro --session"),
+        ("hermes.model.unknown.widget.v1", "/model unknown.widget.v1 --session"),
         ("hermes.model.status", "/model"),
         ("hermes.reasoning.medium", "/reasoning medium"),
         ("hermes.reasoning.xhigh", "/reasoning xhigh"),
