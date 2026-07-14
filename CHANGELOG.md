@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.1.2
+
+- Add a ready-to-import Feishu permission JSON covering the plugin's complete
+  feature set, with bulk-import instructions and least-privilege guidance.
+
 ## 4.1.1
 
 - Add the enabled-by-default `inherit_parent_chat_context` Feishu setting to

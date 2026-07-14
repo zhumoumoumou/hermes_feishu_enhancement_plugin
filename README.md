@@ -13,7 +13,7 @@ revision is automatically compatible.
 | Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
 | Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
 | Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
-| This enhancement plugin | `feishu-bot-enhancements 4.1.1` | `plugin.yaml` |
+| This enhancement plugin | `feishu-bot-enhancements 4.1.2` | `plugin.yaml` |
 
 The plugin composes the bundled Feishu adapter and imports its public runtime
 entry points instead of patching Hermes source. When upgrading Hermes or the
@@ -254,6 +254,20 @@ intend to use:
 - `task:task:write` — create and manage Task v2 tasks. With a tenant token, the
   app can operate only on tasks for which it is a member or otherwise authorized.
 
+### 一键导入飞书权限
+
+仓库根目录的 [`feishu-permissions.json`](./feishu-permissions.json) 是覆盖本
+插件全部功能的完整权限模板。它方便快速配置，并非最小权限集合；正式环境
+建议先检查其中的读写、删除及用户身份权限，只保留实际需要的权限。
+
+1. 打开飞书开发者平台并进入对应应用。
+2. 进入 **权限管理**，选择 **批量处理 → 批量导入/导出权限**。
+3. 复制 `feishu-permissions.json` 的全部内容，粘贴到批量导入文本框中。
+4. 检查变更并确认新增权限。
+
+模板同时包含 `tenant` 和 `user` scopes；用户身份权限仍需由相应用户完成
+授权后才能生效。若只需要部分能力，也可以按上方的最小权限说明手动配置。
+
 Documents created with `tenant_access_token` belong to the app and live in the
 app's cloud space. Users cannot open them until the app adds them as a
 collaborator. For documents created by users, the app must first be added as a
@@ -265,6 +279,7 @@ document sharing settings and tenant visibility policies still apply.
 ```text
 feishu-bot-enhancements/
 ├── plugin.yaml                         # Hermes plugin manifest
+├── feishu-permissions.json             # Feishu bulk permission import template
 ├── __init__.py                         # Stable Hermes entry point
 ├── feishu_bot_enhancements/
 │   ├── __init__.py
