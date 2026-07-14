@@ -63,6 +63,27 @@ _SUPPORTED_BLOCK_TYPES = {
     **_OBJECT_BLOCK_TYPES,
 }
 
+# Feishu documents error 1770035 when a single create-blocks request exceeds
+# one of these resource budgets.  Most published limits are higher than this
+# tool's 50-block request cap, but Sheet/Bitable/ISV and inline mentions can
+# still cross them.  Link previews and Wiki child lists are resolved
+# dynamically by Feishu and have no published per-request number; production
+# requests containing nine of those blocks have been rejected with 1770035, so
+# keep a deliberately conservative local budget and ask callers to split them.
+_RESOURCE_BLOCK_LIMITS = {
+    "bitable": 5,
+    "sheet": 5,
+    "isv": 20,
+    "chat_card": 200,
+}
+_INLINE_RESOURCE_LIMITS = {
+    "mention_doc": 200,
+    "mention_user": 200,
+    "inline_file": 200,
+}
+_DYNAMIC_RESOURCE_BLOCK_TYPES = {"link_preview", "sub_page_list"}
+_MAX_DYNAMIC_RESOURCE_BLOCKS = 5
+
 
 _BLOCK_SPEC_SCHEMA = {
     "type": "object",
@@ -100,10 +121,12 @@ FEISHU_DOC_INSERT_BLOCKS_SCHEMA = {
     "name": "feishu_doc_insert_blocks",
     "description": (
         "Insert 1-50 mixed structured blocks in one Feishu docx API call. "
+        "Resource-heavy blocks are preflighted against Feishu request limits; "
+        "split link previews and Wiki sub-page lists into batches of at most 5. "
         "Supports text, headings, equations and mentions inside text, lists, "
         "code, quote, todo, divider, table, sheet, bitable, callout, grid, "
         "iframe, chat card, quote container, ISV, add-ons, Wiki catalogs, "
-        "message-link previews, and board blocks."
+        "link previews, and board blocks."
     ),
     "parameters": {
         "type": "object",
@@ -404,8 +427,11 @@ def _object_block_data(
         data["wiki_token"] = wiki_token
     elif block_type == "link_preview":
         url = str(data.get("url") or "").strip()
-        if not url or data.get("url_type") != "MessageLink":
-            return None, "link_preview requires url and url_type=MessageLink"
+        url_type = data.get("url_type")
+        if not url or url_type not in {"MessageLink", "Undefined"}:
+            return None, (
+                "link_preview requires url and url_type=MessageLink or Undefined"
+            )
         data["url"] = url
     elif block_type == "add_ons":
         if not str(data.get("component_type_id") or "").strip():
@@ -447,6 +473,56 @@ def _build_block(spec: Any, index: int) -> tuple[dict[str, Any] | None, str | No
     }, None
 
 
+def _validate_insert_resource_limits(raw_blocks: list[Any]) -> str | None:
+    block_counts = {block_type: 0 for block_type in _RESOURCE_BLOCK_LIMITS}
+    inline_counts = {element_type: 0 for element_type in _INLINE_RESOURCE_LIMITS}
+    dynamic_count = 0
+
+    for spec in raw_blocks:
+        if not isinstance(spec, dict):
+            continue
+        block_type = str(spec.get("type") or "").strip()
+        if block_type in block_counts:
+            block_counts[block_type] += 1
+        if block_type in _DYNAMIC_RESOURCE_BLOCK_TYPES:
+            dynamic_count += 1
+
+        elements = spec.get("elements")
+        if not isinstance(elements, list):
+            continue
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            element_type = str(element.get("type") or "text").strip()
+            if element_type in inline_counts:
+                inline_counts[element_type] += 1
+
+    for block_type, limit in _RESOURCE_BLOCK_LIMITS.items():
+        count = block_counts[block_type]
+        if count > limit:
+            return (
+                f"blocks contain {count} {block_type} resources; Feishu allows "
+                f"at most {limit} per request. Split them into smaller calls."
+            )
+
+    for element_type, limit in _INLINE_RESOURCE_LIMITS.items():
+        count = inline_counts[element_type]
+        if count > limit:
+            return (
+                f"blocks contain {count} {element_type} resources; Feishu allows "
+                f"at most {limit} per request. Split them into smaller calls."
+            )
+
+    if dynamic_count > _MAX_DYNAMIC_RESOURCE_BLOCKS:
+        return (
+            f"blocks contain {dynamic_count} link_preview/sub_page_list resources; "
+            f"use at most {_MAX_DYNAMIC_RESOURCE_BLOCKS} per request to avoid "
+            "Feishu error 1770035. Split them into smaller calls or replace "
+            "document previews with rich-text links; do not retry the same batch."
+        )
+    return None
+
+
 def handle_doc_insert_blocks(args: dict, **_: Any) -> str:
     document_id = str(args.get("document_id") or "").strip()
     parent_block_id = str(args.get("parent_block_id") or document_id).strip()
@@ -466,6 +542,10 @@ def handle_doc_insert_blocks(args: dict, **_: Any) -> str:
             return tool_error(error)
         blocks.append(block)
 
+    error = _validate_insert_resource_limits(raw_blocks)
+    if error:
+        return tool_error(error)
+
     client, error = _client_or_error()
     if error:
         return error
@@ -478,6 +558,13 @@ def handle_doc_insert_blocks(args: dict, **_: Any) -> str:
         body={"index": index, "children": blocks},
     )
     if code != 0:
+        if code == 1770035:
+            return tool_error(
+                "Insert document blocks failed: Feishu resource limit 1770035. "
+                "Split resource blocks into smaller calls, keep link_preview and "
+                "sub_page_list batches at 5 or fewer, or use rich-text links; "
+                "do not retry the unchanged batch."
+            )
         return tool_error(f"Insert document blocks failed: code={code} msg={msg}")
     return tool_result(success=True, **data)
 

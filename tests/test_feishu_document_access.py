@@ -579,6 +579,81 @@ def test_document_insert_blocks_builds_every_declared_object_type():
     assert "unsupported" in error
 
 
+def test_document_insert_blocks_rejects_large_dynamic_resource_batch():
+    plugin = _load_plugin_module()
+    result = json.loads(
+        plugin._document_objects.handle_doc_insert_blocks(
+            {
+                "document_id": "doxcn_created",
+                "blocks": [
+                    {
+                        "type": "link_preview",
+                        "data": {
+                            "url": f"https://example.com/document/{index}",
+                            "url_type": "Undefined",
+                        },
+                    }
+                    for index in range(6)
+                ],
+            }
+        )
+    )
+
+    assert "use at most 5 per request" in result["error"]
+    assert "rich-text links" in result["error"]
+
+
+def test_document_insert_blocks_enforces_published_resource_limits():
+    plugin = _load_plugin_module()
+    result = json.loads(
+        plugin._document_objects.handle_doc_insert_blocks(
+            {
+                "document_id": "doxcn_created",
+                "blocks": [
+                    {"type": "sheet", "data": {"row_size": 1, "column_size": 1}}
+                    for _ in range(6)
+                ],
+            }
+        )
+    )
+
+    assert "6 sheet resources" in result["error"]
+    assert "at most 5 per request" in result["error"]
+
+
+def test_document_insert_blocks_explains_server_resource_limit():
+    plugin = _load_plugin_module()
+
+    class FakeClient:
+        def request(self, request):
+            return SimpleNamespace(
+                code=1770035,
+                msg="resource count exceed limit",
+                raw=SimpleNamespace(content=json.dumps({"data": {}})),
+            )
+
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=FakeClient()))
+    result = json.loads(
+        plugin._document_objects.handle_doc_insert_blocks(
+            {
+                "document_id": "doxcn_created",
+                "blocks": [
+                    {
+                        "type": "link_preview",
+                        "data": {
+                            "url": "https://example.com/document/1",
+                            "url_type": "Undefined",
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    assert "1770035" in result["error"]
+    assert "do not retry the unchanged batch" in result["error"]
+
+
 def test_document_image_data_url_uses_a_safe_inferred_filename(monkeypatch):
     plugin = _load_plugin_module()
 

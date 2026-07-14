@@ -13,7 +13,7 @@ revision is automatically compatible.
 | Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
 | Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
 | Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
-| This enhancement plugin | `feishu-bot-enhancements 4.3.0` | `plugin.yaml` |
+| This enhancement plugin | `feishu-bot-enhancements 4.3.1` | `plugin.yaml` |
 
 The plugin composes the bundled Feishu adapter and imports its public runtime
 entry points instead of patching Hermes source. When upgrading Hermes or the
@@ -93,7 +93,10 @@ Adds sixteen tools to the existing `feishu_doc` toolset:
 - `feishu_doc_share` adds a viewer, editor, or manager. If no member is given,
   it shares with the current Feishu requester using the persisted session origin.
 - `feishu_doc_insert_blocks` inserts up to 50 mixed text and structured blocks
-  in one request.
+  in one request. It enforces Feishu's published per-request resource limits
+  and conservatively caps dynamically resolved `link_preview` plus
+  `sub_page_list` blocks at five per call. Split larger sets into multiple
+  calls, or use rich-text links instead of document previews.
 - `feishu_doc_insert_media` creates, uploads, and binds an image or attachment.
 - `feishu_doc_update_blocks` updates up to 200 distinct blocks in one request,
   including rich text, structural objects, and uploaded media replacement.

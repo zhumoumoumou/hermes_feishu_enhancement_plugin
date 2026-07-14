@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.3.1
+
+- Preflight document Block resource counts before sending create requests,
+  including Feishu's published Sheet, Bitable, ISV, and mention limits.
+- Cap dynamically resolved link-preview and Wiki sub-page-list blocks at five
+  per request, and return actionable split-or-rich-link guidance for error
+  `1770035` instead of encouraging an unchanged retry.
+- Accept Feishu's documented `Undefined` link-preview URL type in addition to
+  `MessageLink`.
+
 ## 4.3.0
 
 - Apply a configurable finite timeout to the shared Feishu SDK client so a
