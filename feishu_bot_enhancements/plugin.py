@@ -28,6 +28,14 @@ class EnhancedFeishuAdapter(
 ):
     """Bundled Feishu adapter plus all locally managed enhancements."""
 
+    def _build_lark_client(self, domain):
+        """Build the shared SDK client with a finite network timeout."""
+        client = super()._build_lark_client(domain)
+        sdk_config = getattr(client, "_config", None)
+        if sdk_config is not None:
+            sdk_config.timeout = _document_access.request_timeout_seconds(self)
+        return client
+
 
 # Compatibility alias for existing callers and tests.
 MenuEnabledFeishuAdapter = EnhancedFeishuAdapter

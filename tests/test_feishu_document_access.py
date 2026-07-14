@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import sys
+import threading
+import time
 
 from lark_oapi.core.enum import HttpMethod
 
@@ -35,6 +37,25 @@ def test_adapter_factory_binds_the_live_feishu_adapter(monkeypatch):
 
     assert plugin._build_adapter(object()) is adapter
     assert plugin._document_access.get_bound_client() is adapter._client
+
+
+def test_enhanced_adapter_applies_bounded_sdk_request_timeout(monkeypatch):
+    plugin = _load_plugin_module()
+    client = SimpleNamespace(_config=SimpleNamespace(timeout=None))
+    monkeypatch.setattr(
+        plugin.BundledFeishuAdapter,
+        "_build_lark_client",
+        lambda self, domain: client,
+    )
+    adapter = object.__new__(plugin.EnhancedFeishuAdapter)
+    adapter.config = SimpleNamespace(extra={"request_timeout_seconds": 12})
+
+    assert adapter._build_lark_client("https://open.feishu.cn") is client
+    assert client._config.timeout == 12
+
+    adapter.config.extra["request_timeout_seconds"] = 0
+    adapter._build_lark_client("https://open.feishu.cn")
+    assert client._config.timeout == 60
 
 
 def test_document_hooks_inject_and_clear_client_on_tool_thread(monkeypatch):
@@ -852,6 +873,60 @@ def test_document_update_blocks_uploads_and_replaces_existing_media(monkeypatch)
     }
 
 
+def test_document_update_blocks_uploads_media_with_bounded_concurrency(monkeypatch):
+    plugin = _load_plugin_module()
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    async def fake_resolve(kind, source, *, task_id, cwd):
+        return source.encode(), "image/png", f"{source}.png"
+
+    def fake_upload(client, *, data, file_name, parent_type, block_id, document_id):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.04)
+        with lock:
+            active -= 1
+        return 0, "success", {"file_token": f"token_{block_id}"}
+
+    monkeypatch.setattr(plugin._document_objects, "_resolve_media_source", fake_resolve)
+    monkeypatch.setattr(plugin._document_objects, "_upload_media", fake_upload)
+    monkeypatch.setattr(plugin._document_objects, "media_upload_concurrency", lambda: 2)
+    client = _RecordingClient([{"document_revision_id": 9}])
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        asyncio.run(
+            plugin._document_objects.handle_doc_update_blocks(
+                {
+                    "document_id": "doxcn_created",
+                    "updates": [
+                        {
+                            "block_id": f"image_{index}",
+                            "operation": "replace_image",
+                            "source": f"image-{index}",
+                            "data": {},
+                        }
+                        for index in range(4)
+                    ],
+                }
+            )
+        )
+    )
+
+    assert result["success"] is True
+    assert max_active == 2
+    assert [item["block_id"] for item in result["uploaded_media"]] == [
+        "image_0",
+        "image_1",
+        "image_2",
+        "image_3",
+    ]
+
+
 def test_document_delete_blocks_uses_parent_and_exclusive_index_range():
     plugin = _load_plugin_module()
 
@@ -1608,3 +1683,95 @@ def test_wiki_moves_drive_document_and_queries_async_task():
     assert task_request.uri == "/open-apis/wiki/v2/tasks/:task_id"
     assert task_request.paths == {"task_id": "task-123"}
     assert task_request.queries == [("task_type", "move")]
+
+
+def test_wiki_move_document_can_wait_for_bounded_async_completion(monkeypatch):
+    plugin = _load_plugin_module()
+    monkeypatch.setattr(plugin._wiki_tools.time, "sleep", lambda _: None)
+    client = _RecordingClient(
+        [
+            {"task_id": "task-123"},
+            {
+                "task": {
+                    "task_id": "task-123",
+                    "move_result": [{"status": 1, "status_msg": "processing"}],
+                }
+            },
+            {
+                "task": {
+                    "task_id": "task-123",
+                    "move_result": [{"status": 0, "status_msg": "success"}],
+                }
+            },
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._wiki_tools.handle_feishu_wiki(
+            {
+                "action": "move_document",
+                "space_id": "7001",
+                "obj_token": "doxcn1234567890",
+                "obj_type": "docx",
+                "wait_for_completion": True,
+                "poll_interval_seconds": 0.5,
+                "task_timeout_seconds": 10,
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["task_state"] == "succeeded"
+    assert result["completed"] is True
+    assert result["timed_out"] is False
+    assert result["poll_count"] == 2
+    assert len(client.requests) == 3
+
+
+def test_wiki_get_task_wait_returns_processing_on_timeout(monkeypatch):
+    plugin = _load_plugin_module()
+    moments = iter([0.0, 2.0])
+    monkeypatch.setattr(plugin._wiki_tools.time, "monotonic", lambda: next(moments))
+    client = _RecordingClient(
+        [
+            {
+                "task": {
+                    "task_id": "task-123",
+                    "move_result": [{"status": 1, "status_msg": "processing"}],
+                }
+            }
+        ]
+    )
+    plugin._document_access.bind_adapter(SimpleNamespace(_client=client))
+
+    result = json.loads(
+        plugin._wiki_tools.handle_feishu_wiki(
+            {
+                "action": "get_task",
+                "task_id": "task-123",
+                "wait_for_completion": True,
+                "task_timeout_seconds": 1,
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["task_state"] == "processing"
+    assert result["completed"] is False
+    assert result["timed_out"] is True
+    assert result["poll_count"] == 1
+
+
+def test_wiki_move_task_state_distinguishes_terminal_failure():
+    plugin = _load_plugin_module()
+
+    assert plugin._wiki_tools._move_task_state(
+        {"task": {"move_result": [{"status": 1}]}}
+    ) == "processing"
+    assert plugin._wiki_tools._move_task_state(
+        {"task": {"move_result": [{"status": 0}]}}
+    ) == "succeeded"
+    assert plugin._wiki_tools._move_task_state(
+        {"task": {"move_result": [{"status": -1}]}}
+    ) == "failed"

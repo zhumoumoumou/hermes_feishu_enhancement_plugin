@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from tools.registry import tool_error, tool_result
@@ -81,6 +82,26 @@ FEISHU_WIKI_SCHEMA = {
                 "description": "Request migration approval when direct access is missing.",
             },
             "task_id": {"type": "string"},
+            "wait_for_completion": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "For move_document or get_task, poll the Feishu async task "
+                    "until it succeeds, fails, or reaches task_timeout_seconds."
+                ),
+            },
+            "poll_interval_seconds": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 10,
+                "default": 2,
+            },
+            "task_timeout_seconds": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 300,
+                "default": 60,
+            },
             "title": {"type": "string"},
             "query": {"type": "string", "maxLength": 50},
             "page_size": {
@@ -134,6 +155,70 @@ def _request_node(client: Any, token: str, obj_type: str) -> tuple[Any, str, dic
     return _request(client, "GET", _WIKI_NODE_URI, queries=queries)
 
 
+def _bounded_number(
+    value: Any, *, default: float, minimum: float, maximum: float, field: str
+) -> tuple[float, str | None]:
+    if value is None:
+        return default, None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0, f"{field} must be a number"
+    if not minimum <= value <= maximum:
+        return 0, f"{field} must be between {minimum:g} and {maximum:g}"
+    return float(value), None
+
+
+def _move_task_state(data: dict[str, Any]) -> str:
+    task = data.get("task")
+    results = task.get("move_result") if isinstance(task, dict) else None
+    if not isinstance(results, list) or not results:
+        return "unknown"
+    statuses = [item.get("status") for item in results if isinstance(item, dict)]
+    if not statuses:
+        return "unknown"
+    if any(status == 1 for status in statuses):
+        return "processing"
+    if any(status == -1 for status in statuses):
+        return "failed"
+    if all(status == 0 for status in statuses):
+        return "succeeded"
+    return "unknown"
+
+
+def _get_task(
+    client: Any, task_id: str
+) -> tuple[Any, str, dict[str, Any]]:
+    return _request(
+        client,
+        "GET",
+        _WIKI_TASK_URI,
+        paths={"task_id": task_id},
+        queries=[("task_type", "move")],
+    )
+
+
+def _wait_for_task(
+    client: Any,
+    task_id: str,
+    *,
+    poll_interval_seconds: float,
+    task_timeout_seconds: float,
+) -> tuple[Any, str, dict[str, Any], str, int, bool]:
+    deadline = time.monotonic() + task_timeout_seconds
+    poll_count = 0
+    while True:
+        code, msg, data = _get_task(client, task_id)
+        poll_count += 1
+        if code != 0:
+            return code, msg, data, "request_failed", poll_count, False
+        state = _move_task_state(data)
+        if state != "processing":
+            return code, msg, data, state, poll_count, False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return code, msg, data, state, poll_count, True
+        time.sleep(min(poll_interval_seconds, remaining))
+
+
 def _list_pages(
     client: Any,
     uri: str,
@@ -183,6 +268,27 @@ def handle_feishu_wiki(args: dict, **_: Any) -> str:
     fetch_all = args.get("fetch_all", False)
     if not isinstance(fetch_all, bool):
         return tool_error("fetch_all must be a boolean")
+    wait_for_completion = args.get("wait_for_completion", False)
+    if not isinstance(wait_for_completion, bool):
+        return tool_error("wait_for_completion must be a boolean")
+    poll_interval, error = _bounded_number(
+        args.get("poll_interval_seconds"),
+        default=2,
+        minimum=0.5,
+        maximum=10,
+        field="poll_interval_seconds",
+    )
+    if error:
+        return tool_error(error)
+    task_timeout, error = _bounded_number(
+        args.get("task_timeout_seconds"),
+        default=60,
+        minimum=1,
+        maximum=300,
+        field="task_timeout_seconds",
+    )
+    if error:
+        return tool_error(error)
 
     client, error = _client_or_error()
     if error:
@@ -193,6 +299,9 @@ def handle_feishu_wiki(args: dict, **_: Any) -> str:
     paths: dict[str, str] | None = None
     queries: list[tuple[str, str]] | None = None
     body: dict[str, Any] | None = None
+    task_state = "unknown"
+    poll_count = 0
+    timed_out = False
 
     if action == "list_spaces":
         code, msg, data = _list_pages(
@@ -304,13 +413,15 @@ def handle_feishu_wiki(args: dict, **_: Any) -> str:
         task_id = _text(args, "task_id")
         if not task_id:
             return tool_error("task_id is required for get_task")
-        code, msg, data = _request(
-            client,
-            "GET",
-            _WIKI_TASK_URI,
-            paths={"task_id": task_id},
-            queries=[("task_type", "move")],
-        )
+        if wait_for_completion:
+            code, msg, data, task_state, poll_count, timed_out = _wait_for_task(
+                client,
+                task_id,
+                poll_interval_seconds=poll_interval,
+                task_timeout_seconds=task_timeout,
+            )
+        else:
+            code, msg, data = _get_task(client, task_id)
     elif action == "create_node":
         if not space_id:
             return tool_error("space_id is required for create_node")
@@ -370,6 +481,32 @@ def handle_feishu_wiki(args: dict, **_: Any) -> str:
 
     if code != 0:
         return tool_error(f"Wiki {action} failed: code={code} msg={msg}")
+    if action == "move_document" and wait_for_completion:
+        task_id = str(data.get("task_id") or "").strip()
+        if task_id:
+            initial_data = dict(data)
+            code, msg, task_data, task_state, poll_count, timed_out = _wait_for_task(
+                client,
+                task_id,
+                poll_interval_seconds=poll_interval,
+                task_timeout_seconds=task_timeout,
+            )
+            if code != 0:
+                return tool_error(
+                    f"Wiki get_task failed after move_document: code={code} msg={msg}",
+                    task_id=task_id,
+                )
+            data = {**initial_data, **task_data}
+    if wait_for_completion and action in {"move_document", "get_task"}:
+        return tool_result(
+            success=task_state != "failed",
+            action=action,
+            task_state=task_state,
+            completed=task_state in {"succeeded", "failed"},
+            timed_out=timed_out,
+            poll_count=poll_count,
+            **data,
+        )
     return tool_result(success=True, action=action, **data)
 
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.3.0
+
+- Apply a configurable finite timeout to the shared Feishu SDK client so a
+  stalled HTTP connection cannot hold an agent session forever.
+- Prepare and upload source-based document media with configurable bounded
+  concurrency while preserving update/result order.
+- Add optional bounded polling for Wiki document-migration tasks, including
+  explicit success, failure, processing, and timeout states.
+
 ## 4.2.1
 
 - Add existing Drive-document migration into Wiki spaces, including optional

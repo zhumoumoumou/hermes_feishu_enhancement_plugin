@@ -13,7 +13,7 @@ revision is automatically compatible.
 | Hermes Agent | `0.18.2` | Source revision `111544d` (2026-07-10) |
 | Bundled Feishu bot platform | `feishu-platform 1.0.0` | `plugins/platforms/feishu/plugin.yaml` |
 | Feishu Python SDK | `lark-oapi 1.5.3` | Development and integration-test dependency |
-| This enhancement plugin | `feishu-bot-enhancements 4.2.1` | `plugin.yaml` |
+| This enhancement plugin | `feishu-bot-enhancements 4.3.0` | `plugin.yaml` |
 
 The plugin composes the bundled Feishu adapter and imports its public runtime
 entry points instead of patching Hermes source. When upgrading Hermes or the
@@ -127,9 +127,33 @@ limited to one `space_id`.
 `move_document` migrates an existing Drive document into a knowledge space,
 optionally below `parent_node_token`. It accepts doc/docx, Sheet, Bitable, and
 Mindnote URLs or tokens. The operation is asynchronous when Feishu returns a
-`task_id`; pass that ID to `get_task` until the move result is no longer
-processing. `apply: true` asks the document owner for migration approval when
-the bot cannot move it directly; it does not bypass document permissions.
+`task_id`. By default the tool returns that ID immediately. Set
+`wait_for_completion: true` on `move_document` or `get_task` to poll within the
+same bounded tool call; `poll_interval_seconds` defaults to 2 seconds and
+`task_timeout_seconds` defaults to 60 seconds (maximum 300). A timed-out wait
+returns the latest processing state instead of waiting indefinitely. Setting
+`apply: true` asks the document owner for migration approval when the bot cannot
+move it directly; it does not bypass document permissions.
+
+### Feishu request safety and media concurrency
+
+The plugin applies a finite timeout to the shared Feishu SDK client and uses
+bounded concurrency when a single `feishu_doc_update_blocks` call uploads
+multiple images or files. Both values can be adjusted in `config.yaml` without
+adding environment variables:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      request_timeout_seconds: 60
+      document_media_upload_concurrency: 4
+```
+
+`request_timeout_seconds` accepts 1–300 seconds. The media concurrency accepts
+1–8 workers. Invalid values fall back to the defaults above. The timeout applies
+to all calls made through the shared Lark client, including normal bot sends;
+choose a value large enough for the tenant's biggest permitted upload.
 
 All calls use the bot application's `tenant_access_token`. The application must
 be granted access to the concrete knowledge space or added as a knowledge-space

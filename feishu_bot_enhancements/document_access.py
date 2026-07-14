@@ -9,8 +9,41 @@ from typing import Any
 
 logger = logging.getLogger("hermes.plugins.feishu_bot_enhancements.document_access")
 _DOC_READ_TOOL = "feishu_doc_read"
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
+_DEFAULT_MEDIA_UPLOAD_CONCURRENCY = 4
 _adapter_lock = threading.RLock()
 _active_adapter: Any = None
+
+
+def _extra_config() -> dict[str, Any]:
+    with _adapter_lock:
+        adapter = _active_adapter
+    config = getattr(adapter, "config", None)
+    extra = getattr(config, "extra", None)
+    return extra if isinstance(extra, dict) else {}
+
+
+def request_timeout_seconds(adapter: Any = None) -> float:
+    """Return the bounded HTTP timeout configured for Feishu SDK requests."""
+    extra = None
+    if adapter is not None:
+        extra = getattr(getattr(adapter, "config", None), "extra", None)
+    if not isinstance(extra, dict):
+        extra = _extra_config()
+    value = extra.get("request_timeout_seconds", _DEFAULT_REQUEST_TIMEOUT_SECONDS)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return float(value) if 1 <= value <= 300 else _DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+
+def media_upload_concurrency() -> int:
+    """Return the bounded concurrency used for document media preparation."""
+    value = _extra_config().get(
+        "document_media_upload_concurrency", _DEFAULT_MEDIA_UPLOAD_CONCURRENCY
+    )
+    if isinstance(value, bool) or not isinstance(value, int):
+        return _DEFAULT_MEDIA_UPLOAD_CONCURRENCY
+    return value if 1 <= value <= 8 else _DEFAULT_MEDIA_UPLOAD_CONCURRENCY
 
 
 def bind_adapter(adapter: Any) -> None:
@@ -59,4 +92,6 @@ __all__ = [
     "clear_document_client",
     "get_bound_client",
     "inject_document_client",
+    "media_upload_concurrency",
+    "request_timeout_seconds",
 ]

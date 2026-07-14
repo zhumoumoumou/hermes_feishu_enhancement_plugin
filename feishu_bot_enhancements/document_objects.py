@@ -13,6 +13,7 @@ from urllib.parse import quote, urlsplit
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error, tool_result
 
+from .document_access import media_upload_concurrency
 from .document_tools import (
     _CREATE_CHILDREN_URI,
     _RICH_TEXT_ELEMENTS_SCHEMA,
@@ -1019,80 +1020,103 @@ async def handle_doc_update_blocks(args: dict, **kwargs: Any) -> str:
     client, error = _client_or_error()
     if error:
         return error
-    uploaded_media: list[dict[str, str]] = []
-    for index, (spec, request) in enumerate(zip(raw_updates, requests)):
+    semaphore = asyncio.Semaphore(media_upload_concurrency())
+
+    async def prepare_media(
+        index: int, spec: dict[str, Any], request: dict[str, Any]
+    ) -> tuple[dict[str, str] | None, str | None]:
         operation = str(spec["operation"])
         source = str(spec.get("source") or "").strip()
-        if operation in {"replace_image", "replace_file"} and not source and not str(
-            request[operation].get("token") or ""
-        ).strip():
-            kind = "image" if operation == "replace_image" else "file"
-            code, msg, block_data = await asyncio.to_thread(
-                _request,
+        if operation not in {"replace_image", "replace_file"}:
+            if source:
+                return None, (
+                    f"updates[{index}].source is only valid for media replacement"
+                )
+            return None, None
+
+        kind = "image" if operation == "replace_image" else "file"
+        async with semaphore:
+            if not source and not str(request[operation].get("token") or "").strip():
+                code, msg, block_data = await asyncio.to_thread(
+                    _request,
+                    client,
+                    "GET",
+                    _GET_BLOCK_URI,
+                    paths={
+                        "document_id": document_id,
+                        "block_id": request["block_id"],
+                    },
+                    queries=[("document_revision_id", "-1")],
+                )
+                block = block_data.get("block", block_data)
+                media_data = block.get(kind) if isinstance(block, dict) else None
+                token = (
+                    str(media_data.get("token") or "")
+                    if isinstance(media_data, dict)
+                    else ""
+                )
+                if code != 0 or not token:
+                    return None, (
+                        f"Read updates[{index}] existing {kind} token failed: "
+                        f"code={code} msg={msg}"
+                    )
+                request[operation]["token"] = token
+                return None, None
+            if not source:
+                return None, None
+
+            try:
+                media, _mime, inferred_name = await _resolve_media_source(
+                    kind,
+                    source,
+                    task_id=str(kwargs.get("task_id") or ""),
+                    cwd=str(kwargs.get("cwd") or ""),
+                )
+            except Exception as exc:
+                return None, f"Unable to read updates[{index}] media source: {exc}"
+            file_name = str(spec.get("file_name") or inferred_name).strip()
+            if (
+                not file_name
+                or len(file_name) > 250
+                or Path(file_name).name != file_name
+            ):
+                return None, (
+                    f"updates[{index}].file_name must be a basename of 1-250 characters"
+                )
+            code, msg, upload_data = await asyncio.to_thread(
+                _upload_media,
                 client,
-                "GET",
-                _GET_BLOCK_URI,
-                paths={
-                    "document_id": document_id,
-                    "block_id": request["block_id"],
-                },
-                queries=[("document_revision_id", "-1")],
+                data=media,
+                file_name=file_name,
+                parent_type=f"docx_{kind}",
+                block_id=request["block_id"],
+                document_id=document_id,
             )
-            block = block_data.get("block", block_data)
-            media_data = block.get(kind) if isinstance(block, dict) else None
-            token = (
-                str(media_data.get("token") or "")
-                if isinstance(media_data, dict)
-                else ""
-            )
+            token = str(upload_data.get("file_token") or "")
             if code != 0 or not token:
-                return tool_error(
-                    f"Read updates[{index}] existing {kind} token failed: "
-                    f"code={code} msg={msg}"
+                return None, (
+                    f"Upload updates[{index}] {kind} failed: code={code} msg={msg}"
                 )
             request[operation]["token"] = token
-        if not source:
-            continue
-        if operation not in {"replace_image", "replace_file"}:
-            return tool_error(f"updates[{index}].source is only valid for media replacement")
-        kind = "image" if operation == "replace_image" else "file"
-        try:
-            media, _mime, inferred_name = await _resolve_media_source(
-                kind,
-                source,
-                task_id=str(kwargs.get("task_id") or ""),
-                cwd=str(kwargs.get("cwd") or ""),
-            )
-        except Exception as exc:
-            return tool_error(f"Unable to read updates[{index}] media source: {exc}")
-        file_name = str(spec.get("file_name") or inferred_name).strip()
-        if not file_name or len(file_name) > 250 or Path(file_name).name != file_name:
-            return tool_error(
-                f"updates[{index}].file_name must be a basename of 1-250 characters"
-            )
-        code, msg, upload_data = await asyncio.to_thread(
-            _upload_media,
-            client,
-            data=media,
-            file_name=file_name,
-            parent_type=f"docx_{kind}",
-            block_id=request["block_id"],
-            document_id=document_id,
-        )
-        token = str(upload_data.get("file_token") or "")
-        if code != 0 or not token:
-            return tool_error(
-                f"Upload updates[{index}] {kind} failed: code={code} msg={msg}"
-            )
-        request[operation]["token"] = token
-        uploaded_media.append(
-            {
+            return {
                 "block_id": request["block_id"],
                 "kind": kind,
                 "file_name": file_name,
                 "file_token": token,
-            }
+            }, None
+
+    prepared = await asyncio.gather(
+        *(
+            prepare_media(index, spec, request)
+            for index, (spec, request) in enumerate(zip(raw_updates, requests))
         )
+    )
+    uploaded_media: list[dict[str, str]] = []
+    for media_result, prepare_error in prepared:
+        if prepare_error:
+            return tool_error(prepare_error)
+        if media_result is not None:
+            uploaded_media.append(media_result)
 
     code, msg, data = await asyncio.to_thread(
         _request,
